@@ -63,8 +63,11 @@ if (isDevelopment) {
  * @returns {Promise} - Résultat de l'envoi d'email
  */
 const sendStatusUpdateEmail = async (ticket, status, comment = '') => {
-  // Ne pas envoyer d'email si l'adresse email du client n'est pas disponible
-  if (!ticket.clientInfo || !ticket.clientInfo.email) {
+  // Normaliser et valider l'email destinataire
+  const to = (ticket && ticket.clientInfo && ticket.clientInfo.email)
+    ? String(ticket.clientInfo.email).trim()
+    : '';
+  if (!to) {
     console.log('Impossible d\'envoyer un email: adresse email du client manquante');
     return null;
   }
@@ -170,8 +173,11 @@ const sendStatusUpdateEmail = async (ticket, status, comment = '') => {
  * @returns {Promise} - Résultat de l'envoi d'email
  */
 const sendTicketCreationEmail = async (ticket) => {
-  // Ne pas envoyer d'email si l'adresse email du client n'est pas disponible
-  if (!ticket.clientInfo || !ticket.clientInfo.email) {
+  // Normaliser et valider l'email destinataire
+  const to = (ticket && ticket.clientInfo && ticket.clientInfo.email)
+    ? String(ticket.clientInfo.email).trim()
+    : '';
+  if (!to) {
     console.log('Impossible d\'envoyer un email: adresse email du client manquante');
     return null;
   }
@@ -212,13 +218,16 @@ const sendTicketCreationEmail = async (ticket) => {
     `L'équipe Car Parts France`;
   const mailOptions = {
     from: process.env.EMAIL_FROM || '"Car Parts France SAV" <sav@carpartsfrance.fr>',
-    to: ticket.clientInfo.email,
+    to,
     subject: subject,
     html: htmlContent,
     text: textContent,
     replyTo: process.env.EMAIL_REPLY_TO || 'sav@carpartsfrance.fr',
     headers: { 'X-Entity-Ref-ID': String(ticket.ticketNumber || '') },
-    envelope: { from: (process.env.EMAIL_RETURN_PATH || process.env.EMAIL_USER || 'sav@carpartsfrance.fr') }
+    envelope: {
+      from: (process.env.EMAIL_RETURN_PATH || process.env.EMAIL_USER || 'sav@carpartsfrance.fr'),
+      to
+    }
   };
 
   try {
