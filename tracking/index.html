@@ -313,6 +313,42 @@
             }
         }
         
+        /* Améliorations mobile pour le formulaire d'informations complémentaires */
+        @media (max-width: 600px) {
+            .communication-section {
+                padding: 16px;
+                margin-left: 0;
+                margin-right: 0;
+            }
+            .additional-info-form {
+                margin-top: 12px;
+            }
+            .form-group {
+                display: block;
+            }
+            .form-group textarea,
+            #additional-message {
+                width: 100%;
+                max-width: 100%;
+                box-sizing: border-box;
+                min-height: 160px; /* confort de saisie */
+                line-height: 1.4;
+                font-size: 16px; /* évite le zoom iOS */
+            }
+            .file-upload-container {
+                display: block;
+            }
+            .file-label {
+                display: block;
+                width: 100%;
+                text-align: center;
+            }
+            .selected-files {
+                word-wrap: break-word;
+                overflow-wrap: anywhere;
+            }
+        }
+        
         .additional-info-form {
             margin-top: 15px;
         }
