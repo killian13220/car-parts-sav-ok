@@ -6,6 +6,9 @@ const fs = require('fs');
 const cors = require('cors');
 const bodyParser = require('body-parser');
 const nodemailer = require('nodemailer');
+const helmet = require('helmet');
+const compression = require('compression');
+const rateLimit = require('express-rate-limit');
 const connectDB = require('./db');
 const Ticket = require('./models/ticket');
 const StatusUpdate = require('./models/status');
@@ -19,6 +22,8 @@ require('dotenv').config();
 // Initialisation de l'application Express
 const app = express();
 const PORT = process.env.PORT || 3000;
+// L'application est derrière un proxy (Railway/Render)
+app.set('trust proxy', 1);
 
 // Connexion à MongoDB
 connectDB();
@@ -52,11 +57,31 @@ app.use(cors({
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
+// Sécurité HTTP de base (désactive CSP stricte pour éviter de casser l'admin inline)
+app.use(helmet({
+  contentSecurityPolicy: false,
+}));
+// Compression des réponses
+app.use(compression());
+// Parsing
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// S'assurer que le répertoire d'uploads existe
-const uploadsDir = path.join(__dirname, '../uploads');
+// Rate limiting sur les routes admin (anti-abus)
+const adminLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 300, // 300 requêtes/15min/IP
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// S'assurer que le répertoire d'uploads existe (supporte UPLOADS_DIR)
+const configuredUploadsDir = (process.env.UPLOADS_DIR && process.env.UPLOADS_DIR.trim() !== '')
+  ? process.env.UPLOADS_DIR.trim()
+  : path.join(__dirname, '../uploads');
+const uploadsDir = path.isAbsolute(configuredUploadsDir)
+  ? configuredUploadsDir
+  : path.join(__dirname, '..', configuredUploadsDir);
 try {
   fs.mkdirSync(uploadsDir, { recursive: true });
 } catch (e) {
@@ -97,7 +122,7 @@ const upload = multer({
 
 // Servir les fichiers statiques
 app.use(express.static(path.join(__dirname, '../')));
-app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
+app.use('/uploads', express.static(uploadsDir));
 app.use('/admin', express.static(path.join(__dirname, '../admin')));
 app.use('/tracking', express.static(path.join(__dirname, '../tracking')));
 
@@ -111,6 +136,16 @@ app.get('/healthz', (req, res) => {
     uptime: process.uptime(),
     db: dbState // 1 = connected, 2 = connecting, 0 = disconnected
   });
+});
+
+// Readiness probe (prêt à recevoir du trafic)
+app.get('/readyz', (req, res) => {
+  const dbState = (mongoose && mongoose.connection)
+    ? mongoose.connection.readyState
+    : -1;
+  const ok = dbState === 1; // prêt si DB connectée
+  if (!ok) return res.status(503).json({ status: 'not-ready', db: dbState });
+  return res.json({ status: 'ready', db: dbState });
 });
 
 // Routes API
