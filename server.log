@@ -1,0 +1,84 @@
+Configuration SMTP: {
+  host: 'smtp.hostinger.com',
+  port: '465',
+  secure: true,
+  user: 'sav@carpartsfrance.fr'
+}
+URL de base pour les emails: http://127.0.0.1:54353
+✅ Serveur démarré sur le port 3000
+✅ Connexion à MongoDB établie avec succès
+Requête reçue: [Object: null prototype] {
+  firstName: 'ki',
+  lastName: 'kil',
+  email: 'killian.belabbes@gmail.com',
+  phone: '0763450222',
+  orderNumber: '1222',
+  orderDate: '',
+  make: '',
+  model: '',
+  year: '',
+  vin: 'aa-123-aa',
+  registrationNumber: '',
+  installationDate: '',
+  partType: 'moteur',
+  symptom: 'ss',
+  failureTime: 'autre',
+  errorCodes: '12333',
+  professionalInstallation: 'true',
+  montage_pro: 'oui',
+  oilFilled: 'true',
+  mise_huile: 'oui',
+  oilQuantity: '11',
+  oilReference: '78w90',
+  newParts: 'true',
+  newPartsDetails: 'pompe a eau',
+  pieces_details: 'pompe a eau',
+  documentTypes: [ 'justificatif_pro_file', 'factures_pieces', 'lecture_obd' ]
+}
+Fichiers reçus: [
+  {
+    fieldname: 'documents',
+    originalname: '1233920-Photoroom (3).png',
+    encoding: '7bit',
+    mimetype: 'image/png',
+    destination: '/Users/killianbelabbes/CascadeProjects/carparts-sav-form/uploads',
+    filename: 'documents-1753515186707-992170853.png',
+    path: '/Users/killianbelabbes/CascadeProjects/carparts-sav-form/uploads/documents-1753515186707-992170853.png',
+    size: 1342004
+  },
+  {
+    fieldname: 'documents',
+    originalname: 'Car Parts France (14).png',
+    encoding: '7bit',
+    mimetype: 'image/png',
+    destination: '/Users/killianbelabbes/CascadeProjects/carparts-sav-form/uploads',
+    filename: 'documents-1753515186717-211334404.png',
+    path: '/Users/killianbelabbes/CascadeProjects/carparts-sav-form/uploads/documents-1753515186717-211334404.png',
+    size: 19321
+  },
+  {
+    fieldname: 'documents',
+    originalname: 'result_image (3).jpg',
+    encoding: '7bit',
+    mimetype: 'image/jpeg',
+    destination: '/Users/killianbelabbes/CascadeProjects/carparts-sav-form/uploads',
+    filename: 'documents-1753515186717-985635664.jpg',
+    path: '/Users/killianbelabbes/CascadeProjects/carparts-sav-form/uploads/documents-1753515186717-985635664.jpg',
+    size: 3536131
+  }
+]
+Mappage de type de document: justificatif_pro_file -> factures_pieces
+Mappage de type de document: factures_pieces -> factures_pieces
+Mappage de type de document: lecture_obd -> lecture_obd
+Email de confirmation envoyé: <59c42a7f-7d54-8dd0-0b51-8b3e60c08133@carpartsfrance.fr>
+Email de confirmation envoyé au client killian.belabbes@gmail.com
+Email envoyé: <3b217196-4b6b-8f4d-d025-c0dd7e8122e5@carpartsfrance.fr>
+Email de notification envoyé au client killian.belabbes@gmail.com pour le ticket CPF-250726-1815
+Email envoyé: <7ccbfcb6-044d-ea8a-41f7-d37db8ca811d@carpartsfrance.fr>
+Email de notification envoyé au client jeuehk@gmail.com pour le ticket CPF-250725-1556
+Recherche du ticket: CPF-250726-1815
+Résultat de la recherche: Ticket trouvé
+2 mises à jour de statut trouvées pour le ticket
+Recherche du ticket: CPF-250725-1556
+Résultat de la recherche: Ticket trouvé
+5 mises à jour de statut trouvées pour le ticket
