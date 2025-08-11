@@ -87,7 +87,7 @@ window.deleteTicket = async function(ticketId, ticketNumber, event) {
         const confirmed = confirm(`Êtes-vous sûr de vouloir supprimer le ticket ${ticketNumber} ? Cette action est irréversible.`);
         
         if (!confirmed) {
-            return; // Annuler si l'utilisateur n'a pas confirmé
+            return false; // Annuler si l'utilisateur n'a pas confirmé
         }
         
         console.log('Envoi de la requête DELETE pour le ticket:', ticketId);
@@ -124,7 +124,7 @@ window.deleteTicket = async function(ticketId, ticketNumber, event) {
                     setTimeout(() => {
                         window.location.reload();
                     }, 3000);
-                    return;
+                    return false;
                 } else if (response.status === 401) {
                     throw new Error('Accès non autorisé. Veuillez vous reconnecter.');
                 } else {
@@ -240,7 +240,11 @@ window.deleteTicket = async function(ticketId, ticketNumber, event) {
         if (error.message === 'Unauthorized') {
             logout();
         }
+        return false;
     }
+    
+    // Succès
+    return true;
 };
 
 // Fonction auxiliaire pour mettre à jour les compteurs de tickets
@@ -910,6 +914,24 @@ function initFilterTabs() {
     }
 }
 
+// Revenir à la liste avec restauration du scroll et nettoyage des handlers
+function goBackToList() {
+    try {
+        if (ticketDetails) ticketDetails.style.display = 'none';
+        const dashboard = document.querySelector('.admin-dashboard');
+        if (dashboard) dashboard.style.display = 'block';
+        if (detailsKeydownHandler) {
+            document.removeEventListener('keydown', detailsKeydownHandler);
+            detailsKeydownHandler = null;
+        }
+        if (typeof lastListScrollY === 'number') {
+            try { window.scrollTo({ top: lastListScrollY, left: 0, behavior: 'auto' }); } catch(_) { window.scrollTo(0, lastListScrollY || 0); }
+        }
+    } catch (e) {
+        console.warn('goBackToList error', e);
+    }
+}
+
 // Fonction pour synchroniser les filtres entre les onglets
 function setupFilterSync() {
     // Synchroniser les filtres de statut
@@ -1012,6 +1034,19 @@ document.addEventListener('DOMContentLoaded', function() {
     let additionalInfoGroup = null;
     let saveNotesBtn = null;
     let cachedUsers = [];
+    // Améliorations UX: mémoriser le scroll de la liste et le key handler des détails
+    let lastListScrollY = 0;
+    let detailsKeydownHandler = null;
+    // Titres/aria des boutons globaux si présents
+    if (backToListBtn) {
+        backToListBtn.title = 'Retour à la liste (Échap)';
+        backToListBtn.setAttribute('aria-label', 'Retour à la liste');
+    }
+    const deleteDetailBtnInit = document.getElementById('delete-ticket-detail');
+    if (deleteDetailBtnInit) {
+        deleteDetailBtnInit.title = 'Supprimer le ticket';
+        deleteDetailBtnInit.setAttribute('aria-label', 'Supprimer le ticket');
+    }
     
     // Variables globales
     let currentPage = 1;
@@ -2340,6 +2375,8 @@ document.addEventListener('DOMContentLoaded', function() {
         try {
             currentTicketId = ticketId;
             console.log('Récupération des détails du ticket ID:', ticketId);
+            // Mémoriser la position de scroll de la liste
+            try { lastListScrollY = window.scrollY || 0; } catch(_) { lastListScrollY = 0; }
             
             // Récupérer les détails du ticket
             const response = await fetch(`/api/admin/tickets/${ticketId}`, {
@@ -2397,6 +2434,21 @@ document.addEventListener('DOMContentLoaded', function() {
                 ticketDetails.style.display = 'block';
                 console.log('ticket-details affiché');
             }
+            // Activer le raccourci clavier Échap pour revenir à la liste
+            try {
+                if (detailsKeydownHandler) document.removeEventListener('keydown', detailsKeydownHandler);
+                detailsKeydownHandler = (ev) => {
+                    if (ev.key === 'Escape') { ev.preventDefault(); try { goBackToList(); } catch(_) {} }
+                };
+                document.addEventListener('keydown', detailsKeydownHandler);
+            } catch(_) {}
+            // Mettre à jour les titres des boutons si présents
+            try {
+                const backBtn = document.getElementById('back-to-list');
+                if (backBtn) backBtn.title = 'Retour à la liste (Échap)';
+                const delBtn = document.getElementById('delete-ticket-detail');
+                if (delBtn) delBtn.title = 'Supprimer le ticket';
+            } catch(_) {}
             
             console.log('Vue détaillée affichée');
             
@@ -2844,6 +2896,50 @@ document.addEventListener('DOMContentLoaded', function() {
                 statusTimeline.innerHTML = '';
                 
                 if (statusHistory && statusHistory.length > 0) {
+            // Conserver la liste des chemins déjà rendus via les pièces jointes de statuts
+            const renderedAttachmentPaths = new Set();
+            // Préparer le mapping des documents du ticket vers une mise à jour de statut
+            const normalizePath = (p) => {
+                if (!p) return '';
+                return p.includes('uploads/') ? '/uploads/' + p.split('uploads/')[1] : '/uploads/' + p.split('/').pop();
+            };
+            const docsRaw = Array.isArray(ticket.documents) ? ticket.documents : [];
+            const normalizedDocs = docsRaw.map(doc => ({
+                ...doc,
+                __normPath: doc.filePath ? normalizePath(doc.filePath) : (doc.fileId ? `/uploads/${doc.fileId}` : ''),
+                __uploadAt: doc.uploadDate ? new Date(doc.uploadDate) : null
+            })).filter(d => d.__normPath);
+            const statusesAsc = [...statusHistory].sort((a,b) => new Date(a.updatedAt) - new Date(b.updatedAt));
+            const docsByStatusId = new Map();
+            const usedDocPaths = new Set();
+            // Assigner chaque document au statut le plus pertinent (par date, priorité aux réponses client)
+            normalizedDocs.forEach(d => {
+                const t = d.__uploadAt;
+                let target = null;
+                if (t) {
+                    // Trouver le statut avec updatedAt <= t le plus proche
+                    let idx = -1;
+                    for (let i = 0; i < statusesAsc.length; i++) {
+                        const u = new Date(statusesAsc[i].updatedAt);
+                        if (u <= t) idx = i; else break;
+                    }
+                    if (idx === -1) idx = 0; // avant le premier, rattacher au premier
+                    // Si possible, préférer un statut client en remontant
+                    let chosen = statusesAsc[idx];
+                    for (let j = idx; j >= 0; j--) {
+                        if (statusesAsc[j] && statusesAsc[j].updatedBy === 'client') { chosen = statusesAsc[j]; break; }
+                    }
+                    target = chosen;
+                } else {
+                    // Pas de date: rattacher au dernier statut client si présent, sinon au plus récent
+                    target = [...statusesAsc].reverse().find(s => s.updatedBy === 'client') || statusesAsc[statusesAsc.length - 1];
+                }
+                if (target && target._id) {
+                    const arr = docsByStatusId.get(target._id) || [];
+                    arr.push(d);
+                    docsByStatusId.set(target._id, arr);
+                }
+            });
             statusHistory.forEach((status, index) => {
                 const statusItem = document.createElement('div');
                 statusItem.className = 'status-item';
@@ -2882,11 +2978,172 @@ document.addEventListener('DOMContentLoaded', function() {
                 statusContent.appendChild(statusTitle);
                 statusContent.appendChild(statusDescription);
                 
+                // Pièces jointes associées à cette mise à jour (attachments + documents du ticket liés)
+                const combinedItems = [];
+                // 1) Depuis status.attachments
+                if (Array.isArray(status.attachments)) {
+                    status.attachments.forEach(att => {
+                        let filePath = '';
+                        if (att.filePath) {
+                            filePath = att.filePath.includes('uploads/')
+                                ? '/uploads/' + att.filePath.split('uploads/')[1]
+                                : '/uploads/' + att.filePath.split('/').pop();
+                        }
+                        if (filePath) { try { renderedAttachmentPaths.add(filePath); } catch(_) {} }
+                        combinedItems.push({
+                            filePath,
+                            fileName: att.fileName || 'Fichier'
+                        });
+                    });
+                }
+                // 2) Documents du ticket liés à ce statut
+                const docsForThisStatus = docsByStatusId.get(status._id) || [];
+                docsForThisStatus.forEach(doc => {
+                    if (doc.__normPath && !renderedAttachmentPaths.has(doc.__normPath)) {
+                        combinedItems.push({ filePath: doc.__normPath, fileName: doc.fileName || 'Fichier' });
+                        try { usedDocPaths.add(doc.__normPath); } catch(_) {}
+                    }
+                });
+                
+                if (combinedItems.length > 0) {
+                    // Déduplication locale des pièces jointes par chemin normalisé (ou nom)
+                    const seenKeys = new Set();
+                    const itemsToRender = [];
+                    combinedItems.forEach(ci => {
+                        const key = (ci.filePath && ci.filePath.toLowerCase()) || ('name:' + (ci.fileName || '').toLowerCase());
+                        if (!seenKeys.has(key)) { seenKeys.add(key); itemsToRender.push(ci); }
+                    });
+
+                    const attachmentsContainer = document.createElement('div');
+                    attachmentsContainer.className = 'status-attachments';
+                    const attachmentsHeader = document.createElement('div');
+                    attachmentsHeader.className = 'status-attachments-header';
+                    attachmentsHeader.innerHTML = `<i class="fas fa-paperclip"></i> Pièces jointes (${itemsToRender.length})`;
+                    attachmentsContainer.appendChild(attachmentsHeader);
+                    const attachmentsList = document.createElement('div');
+                    attachmentsList.className = 'status-attachments-list';
+                    itemsToRender.forEach(item => {
+                        const fileName = item.fileName;
+                        const fileExt = fileName.includes('.') ? fileName.split('.').pop().toLowerCase() : '';
+                        const isImage = ['jpg','jpeg','png','gif','webp'].includes(fileExt);
+                        const isPDF = fileExt === 'pdf';
+                        const attItem = document.createElement('div');
+                        attItem.className = 'status-attachment-item';
+                        // L'aperçu devient cliquable directement
+                        let preview;
+                        if (item.filePath) {
+                            preview = document.createElement('a');
+                            preview.href = item.filePath;
+                            preview.target = '_blank';
+                            preview.rel = 'noopener';
+                            preview.className = 'attachment-preview';
+                        } else {
+                            preview = document.createElement('div');
+                            preview.className = 'attachment-preview';
+                        }
+                        if (item.filePath && isImage) {
+                            preview.innerHTML = `<img src="${item.filePath}" alt="${item.fileName}" class="document-thumbnail">`;
+                        } else if (item.filePath && isPDF) {
+                            preview.innerHTML = `<div class=\"pdf-preview\"><i class=\"fas fa-file-pdf\"></i><span>PDF</span></div>`;
+                        } else {
+                            preview.innerHTML = `<i class=\"fas fa-file attachment-icon\"></i>`;
+                        }
+                        attItem.appendChild(preview);
+                        attachmentsList.appendChild(attItem);
+                    });
+                    attachmentsContainer.appendChild(attachmentsList);
+                    statusContent.appendChild(attachmentsContainer);
+                }
+                
                 statusItem.appendChild(statusDot);
                 statusItem.appendChild(statusContent);
                 
                 statusTimeline.appendChild(statusItem);
             });
+
+            // Ajouter un item de timeline pour les documents non liés à un statut
+            try {
+                const leftovers = normalizedDocs.filter(d => d.__normPath && !renderedAttachmentPaths.has(d.__normPath) && !usedDocPaths.has(d.__normPath));
+                // Déduplication des documents non liés par chemin normalisé
+                const leftoversMap = new Map();
+                leftovers.forEach(d => { if (!leftoversMap.has(d.__normPath)) leftoversMap.set(d.__normPath, d); });
+                const uniqueLeftovers = Array.from(leftoversMap.values());
+                if (uniqueLeftovers.length > 0) {
+                    const item = document.createElement('div');
+                    item.className = 'status-item';
+
+                    const dot = document.createElement('div');
+                    dot.className = 'status-dot';
+                    const i = document.createElement('i');
+                    i.className = 'fas fa-paperclip';
+                    dot.appendChild(i);
+
+                    const content = document.createElement('div');
+                    content.className = 'status-content';
+
+                    const date = document.createElement('div');
+                    date.className = 'status-date';
+                    date.textContent = 'Documents non liés';
+
+                    const title = document.createElement('div');
+                    title.className = 'status-title';
+                    title.textContent = `Pièces jointes (${uniqueLeftovers.length})`;
+
+                    const list = document.createElement('div');
+                    list.className = 'status-attachments-list';
+
+                    uniqueLeftovers.forEach(doc => {
+                        const att = document.createElement('div');
+                        att.className = 'status-attachment-item';
+                        const fileName = doc.fileName || 'Fichier';
+                        const ext = fileName.includes('.') ? fileName.split('.').pop().toLowerCase() : '';
+                        const isImage = ['jpg','jpeg','png','gif','webp'].includes(ext);
+                        const isPDF = ext === 'pdf';
+
+                        // L'aperçu devient cliquable directement
+                        let preview;
+                        if (doc.__normPath) {
+                            preview = document.createElement('a');
+                            preview.href = doc.__normPath;
+                            preview.target = '_blank';
+                            preview.rel = 'noopener';
+                            preview.className = 'attachment-preview';
+                        } else {
+                            preview = document.createElement('div');
+                            preview.className = 'attachment-preview';
+                        }
+                        if (doc.__normPath && isImage) {
+                            preview.innerHTML = `<img src="${doc.__normPath}" alt="${fileName}" class="document-thumbnail">`;
+                        } else if (doc.__normPath && isPDF) {
+                            preview.innerHTML = `<div class="pdf-preview"><i class="fas fa-file-pdf"></i><span>PDF</span></div>`;
+                        } else {
+                            preview.innerHTML = `<i class="fas fa-file attachment-icon"></i>`;
+                        }
+
+                        att.appendChild(preview);
+                        list.appendChild(att);
+                    });
+
+                    const container = document.createElement('div');
+                    container.className = 'status-attachments';
+
+                    const header = document.createElement('div');
+                    header.className = 'status-attachments-header';
+                    header.innerHTML = `<i class="fas fa-paperclip"></i> Documents du ticket (non liés)`;
+
+                    container.appendChild(header);
+                    container.appendChild(list);
+
+                    content.appendChild(date);
+                    content.appendChild(title);
+                    content.appendChild(container);
+                    item.appendChild(dot);
+                    item.appendChild(content);
+                    statusTimeline.appendChild(item);
+                }
+            } catch (e) {
+                console.warn('Impossible d\'ajouter le bloc documents dans la timeline:', e);
+            }
                 } else {
                     statusTimeline.innerHTML = '<p>Aucun historique de statut disponible</p>';
                 }
@@ -3064,27 +3321,37 @@ document.addEventListener('DOMContentLoaded', function() {
     initTabsSystem();
     
     // Retour à la liste
-    document.getElementById('back-to-list').addEventListener('click', () => {
-        ticketDetails.style.display = 'none';
-        document.querySelector('.admin-dashboard').style.display = 'block';
+    document.getElementById('back-to-list').addEventListener('click', (e) => {
+        e.preventDefault();
+        goBackToList();
     });
     
     document.getElementById('breadcrumb-tickets').addEventListener('click', (e) => {
         e.preventDefault();
-        ticketDetails.style.display = 'none';
-        document.querySelector('.admin-dashboard').style.display = 'block';
+        goBackToList();
     });
     
     // Gestionnaire d'événement pour le bouton de suppression dans la vue détaillée
-    document.getElementById('delete-ticket-detail').addEventListener('click', (event) => {
+    document.getElementById('delete-ticket-detail').addEventListener('click', async (event) => {
+        event.preventDefault();
+        const btn = event.currentTarget;
         const ticketId = currentTicketId;
         const ticketNumber = document.getElementById('detail-ticket-number').textContent;
-        
-        if (confirm(`Êtes-vous sûr de vouloir supprimer le ticket ${ticketNumber} ? Cette action est irréversible.`)) {
-            deleteTicket(ticketId, ticketNumber, event);
-            // Retourner à la liste après la suppression
-            ticketDetails.style.display = 'none';
-            document.querySelector('.admin-dashboard').style.display = 'block';
+        if (!ticketId) return;
+        // État de chargement
+        const prevHTML = btn.innerHTML;
+        btn.disabled = true;
+        btn.classList.add('loading');
+        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Suppression...';
+        try {
+            const ok = await deleteTicket(ticketId, ticketNumber, event);
+            if (ok) {
+                goBackToList();
+            }
+        } finally {
+            btn.disabled = false;
+            btn.classList.remove('loading');
+            btn.innerHTML = prevHTML;
         }
     });
     
