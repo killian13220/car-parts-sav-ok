@@ -17,14 +17,22 @@ const baseUrl = isDevelopment ? 'http://localhost:3001' : (process.env.WEBSITE_U
 console.log('URL de base pour les emails:', baseUrl);
 
 // Transport SMTP (préférence aux variables d'environnement)
+const defaultPort = (process.env.NODE_ENV === 'production') ? 587 : 465;
+const defaultSecure = (process.env.NODE_ENV === 'production') ? false : true;
 const transportOptions = {
   host: process.env.EMAIL_HOST || 'smtp.hostinger.com',
-  port: Number(process.env.EMAIL_PORT || 465),
-  secure: (process.env.EMAIL_SECURE ? process.env.EMAIL_SECURE === 'true' : true),
+  port: Number(process.env.EMAIL_PORT || defaultPort),
+  secure: (process.env.EMAIL_SECURE ? process.env.EMAIL_SECURE === 'true' : defaultSecure),
   auth: {
     user: process.env.EMAIL_USER || 'sav@carpartsfrance.fr',
     pass: process.env.EMAIL_PASS || ''
   },
+  requireTLS: (process.env.EMAIL_REQUIRE_TLS ? process.env.EMAIL_REQUIRE_TLS === 'true' : ((process.env.EMAIL_SECURE ? process.env.EMAIL_SECURE === 'true' : defaultSecure) ? false : true)),
+  connectionTimeout: Number(process.env.EMAIL_CONN_TIMEOUT_MS || 10000),
+  greetingTimeout: Number(process.env.EMAIL_GREET_TIMEOUT_MS || 10000),
+  socketTimeout: Number(process.env.EMAIL_SOCKET_TIMEOUT_MS || 15000),
+  pool: false,
+  tls: { minVersion: 'TLSv1.2' },
   debug: isDevelopment
 };
 
@@ -65,7 +73,7 @@ const sendAssignmentEmail = async (ticket, assignedUser) => {
     replyTo: process.env.EMAIL_REPLY_TO || 'sav@carpartsfrance.fr',
     headers: { 'X-Entity-Ref-ID': String(ticket.ticketNumber || '') }
   };
-  try { return await transporter.sendMail(mailOptions); } catch (e) { console.error('[emailService] sendAssignmentEmail error:', e); return null; }
+  try { return await safeSendMail(mailOptions); } catch (e) { console.error('[emailService] sendAssignmentEmail error:', e); return null; }
 };
 
 /**
@@ -99,7 +107,7 @@ const sendAssistanceRequestEmail = async (ticket, byUser, message = '') => {
     replyTo: process.env.EMAIL_REPLY_TO || 'sav@carpartsfrance.fr',
     headers: { 'X-Entity-Ref-ID': String(ticket.ticketNumber || '') }
   };
-  try { return await transporter.sendMail(mailOptions); } catch (e) { console.error('[emailService] sendAssistanceRequestEmail error:', e); return null; }
+  try { return await safeSendMail(mailOptions); } catch (e) { console.error('[emailService] sendAssistanceRequestEmail error:', e); return null; }
 };
 
 /**
@@ -133,7 +141,7 @@ const sendEscalationEmail = async (ticket, reason = '', byUser) => {
     replyTo: process.env.EMAIL_REPLY_TO || 'sav@carpartsfrance.fr',
     headers: { 'X-Entity-Ref-ID': String(ticket.ticketNumber || '') }
   };
-  try { return await transporter.sendMail(mailOptions); } catch (e) { console.error('[emailService] sendEscalationEmail error:', e); return null; }
+  try { return await safeSendMail(mailOptions); } catch (e) { console.error('[emailService] sendEscalationEmail error:', e); return null; }
 };
 
 /**
@@ -191,7 +199,7 @@ const sendSlaReminderEmail = async (ticket, assignedUser, hoursLate = 20) => {
   };
 
   try {
-    return await transporter.sendMail(mailOptions);
+    return await safeSendMail(mailOptions);
   } catch (e) {
     console.error('[emailService] sendSlaReminderEmail error:', e);
     return null;
@@ -208,6 +216,47 @@ if (process.env.DKIM_PRIVATE_KEY && process.env.DKIM_DOMAIN && process.env.DKIM_
 }
 
 const transporter = nodemailer.createTransport(transportOptions);
+
+// Journaliser la configuration effective (sans informations sensibles)
+console.log('[emailService] SMTP options effectives:', {
+  host: transportOptions.host,
+  port: transportOptions.port,
+  secure: transportOptions.secure,
+  requireTLS: transportOptions.requireTLS
+});
+
+// Transport de secours (fallback) vers STARTTLS:587 si la connexion échoue (ex: port 465 bloqué)
+function buildFallbackOptions() {
+  const fbPort = Number(process.env.EMAIL_FALLBACK_PORT || 587);
+  const fbSecure = false;
+  return {
+    ...transportOptions,
+    port: fbPort,
+    secure: fbSecure,
+    requireTLS: true,
+  };
+}
+
+async function safeSendMail(mailOptions) {
+  try {
+    return await transporter.sendMail(mailOptions);
+  } catch (err) {
+    const transientCodes = ['ETIMEDOUT', 'ECONNECTION', 'EAI_AGAIN', 'ESOCKET'];
+    const isConnIssue = err && (transientCodes.includes(err.code) || err.command === 'CONN');
+    const sameAsFallback = transportOptions.port === 587 && transportOptions.secure === false;
+    if (!isConnIssue || sameAsFallback) {
+      throw err;
+    }
+    try {
+      console.warn('[emailService] Connexion SMTP primaire échouée, tentative avec fallback STARTTLS:587 ...', err && err.code ? err.code : err);
+      const fbTransport = nodemailer.createTransport(buildFallbackOptions());
+      return await fbTransport.sendMail(mailOptions);
+    } catch (e2) {
+      console.error('[emailService] Échec de l\'envoi via fallback:', e2);
+      throw e2;
+    }
+  }
+}
 
 // Alerter en cas d'absence de mot de passe SMTP
 if (!process.env.EMAIL_PASS || String(process.env.EMAIL_PASS).trim() === '') {
@@ -328,7 +377,7 @@ const sendStatusUpdateEmail = async (ticket, status, comment = '') => {
 
   try {
     // Envoyer l'email
-    const info = await transporter.sendMail(mailOptions);
+    const info = await safeSendMail(mailOptions);
     console.log('Email envoyé:', info.messageId);
     return info;
   } catch (error) {
@@ -402,7 +451,7 @@ const sendTicketCreationEmail = async (ticket) => {
 
   try {
     // Envoyer l'email
-    const info = await transporter.sendMail(mailOptions);
+    const info = await safeSendMail(mailOptions);
     console.log('Email de confirmation envoyé:', info.messageId);
     return info;
   } catch (error) {
@@ -444,7 +493,7 @@ const sendPasswordResetEmail = async (user, resetLink) => {
     replyTo: process.env.EMAIL_REPLY_TO || 'sav@carpartsfrance.fr'
   };
   try {
-    return await transporter.sendMail(mailOptions);
+    return await safeSendMail(mailOptions);
   } catch (e) {
     console.error('[emailService] sendPasswordResetEmail error:', e);
     return null;
