@@ -1,4 +1,5 @@
  const nodemailer = require('nodemailer');
+const https = require('https');
 require('dotenv').config();
 
 // Configuration du transporteur d'emails
@@ -225,10 +226,107 @@ console.log('[emailService] SMTP options effectives:', {
   requireTLS: transportOptions.requireTLS
 });
 
-// Transport de secours (fallback) vers STARTTLS:587 si la connexion échoue (ex: port 465 bloqué)
-function buildFallbackOptions() {
-  const fbPort = Number(process.env.EMAIL_FALLBACK_PORT || 587);
-  const fbSecure = false;
+// --- Envoi via API MailerSend (si configuré) ---
+function parseAddress(input) {
+  if (!input) return { email: '' };
+  const str = String(input).trim();
+  // Exemples acceptés: "Nom" <mail@domaine>, Nom <mail@domaine>, mail@domaine
+  const m = str.match(/^\s*\"?([^\"]*)\"?\s*<\s*([^<>@\s]+@[^<>@\s]+)\s*>\s*$/);
+  if (m) {
+    const name = m[1] && m[1].trim() ? m[1].trim() : undefined;
+    const email = m[2].trim();
+    return { name, email };
+  }
+  return { email: str };
+}
+
+function httpPostJSON(hostname, path, body, extraHeaders = {}) {
+  return new Promise((resolve, reject) => {
+    try {
+      const data = JSON.stringify(body);
+      const options = {
+        hostname,
+        path,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(data),
+          ...extraHeaders
+        }
+      };
+      const req = https.request(options, (res) => {
+        let chunks = '';
+        res.on('data', (d) => { chunks += d; });
+        res.on('end', () => {
+          const ok = res.statusCode && res.statusCode >= 200 && res.statusCode < 300;
+          if (ok) {
+            resolve({
+              statusCode: res.statusCode,
+              headers: res.headers,
+              body: chunks,
+              messageId: res.headers && (res.headers['x-message-id'] || res.headers['x-message-id'.toLowerCase()]) ? (res.headers['x-message-id'] || res.headers['x-message-id'.toLowerCase()]) : undefined
+            });
+          } else {
+            const err = new Error(`MailerSend HTTP ${res.statusCode}: ${chunks}`);
+            err.statusCode = res.statusCode;
+            reject(err);
+          }
+        });
+      });
+      req.on('error', (e) => reject(e));
+      req.setTimeout(Number(process.env.EMAIL_SOCKET_TIMEOUT_MS || 15000), () => {
+        req.destroy(new Error('MailerSend timeout'));
+      });
+      req.write(data);
+      req.end();
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
+async function sendViaMailerSend(mailOptions) {
+  const apiKey = process.env.MAILERSEND_API_KEY;
+  if (!apiKey) {
+    throw new Error('MAILERSEND_API_KEY non défini');
+  }
+
+  // Déterminer le FROM
+  const fromRaw = process.env.MAILERSEND_FROM_EMAIL || process.env.EMAIL_FROM || process.env.EMAIL_USER || mailOptions.from;
+  const fromParsed = parseAddress(fromRaw);
+  const fromName = process.env.MAILERSEND_FROM_NAME || fromParsed.name;
+
+  // Destinataires
+  const toList = Array.isArray(mailOptions.to) ? mailOptions.to : [mailOptions.to];
+  const to = toList.filter(Boolean).map((addr) => {
+    const p = parseAddress(addr);
+    return p.name ? { email: p.email, name: p.name } : { email: p.email };
+  });
+
+  // Reply-To
+  const replyToParsed = mailOptions.replyTo ? parseAddress(mailOptions.replyTo) : null;
+
+  const payload = {
+    from: fromName ? { email: fromParsed.email, name: fromName } : { email: fromParsed.email },
+    to,
+    subject: mailOptions.subject,
+    html: mailOptions.html,
+    text: mailOptions.text
+  };
+  if (replyToParsed && replyToParsed.email) {
+    payload.reply_to = replyToParsed.name ? { email: replyToParsed.email, name: replyToParsed.name } : { email: replyToParsed.email };
+  }
+
+  const result = await httpPostJSON('api.mailersend.com', '/v1/email', payload, {
+    Authorization: `Bearer ${apiKey}`
+  });
+  return { messageId: result.messageId || undefined, response: `MailerSend ${result.statusCode}` };
+}
+
+// Transport de secours (fallback) vers STARTTLS (587 puis 2525)
+function buildFallbackOptions(port) {
+  const fbPort = Number(port);
+  const fbSecure = false; // STARTTLS
   return {
     ...transportOptions,
     port: fbPort,
@@ -238,22 +336,43 @@ function buildFallbackOptions() {
 }
 
 async function safeSendMail(mailOptions) {
+  // 1) Tenter MailerSend si configuré
+  if (process.env.MAILERSEND_API_KEY) {
+    try {
+      console.log('[emailService] Envoi via MailerSend API...');
+      const info = await sendViaMailerSend(mailOptions);
+      return info;
+    } catch (apiErr) {
+      console.error('[emailService] MailerSend API a échoué, bascule vers SMTP:', apiErr && apiErr.message ? apiErr.message : apiErr);
+      // on continue vers SMTP
+    }
+  }
+
+  // 2) SMTP classique avec fallback
   try {
     return await transporter.sendMail(mailOptions);
   } catch (err) {
     const transientCodes = ['ETIMEDOUT', 'ECONNECTION', 'EAI_AGAIN', 'ESOCKET'];
     const isConnIssue = err && (transientCodes.includes(err.code) || err.command === 'CONN');
-    const sameAsFallback = transportOptions.port === 587 && transportOptions.secure === false;
-    if (!isConnIssue || sameAsFallback) {
+    const sameAsFallback587 = transportOptions.port === 587 && transportOptions.secure === false;
+    if (!isConnIssue || sameAsFallback587) {
       throw err;
     }
     try {
       console.warn('[emailService] Connexion SMTP primaire échouée, tentative avec fallback STARTTLS:587 ...', err && err.code ? err.code : err);
-      const fbTransport = nodemailer.createTransport(buildFallbackOptions());
-      return await fbTransport.sendMail(mailOptions);
+      const fbTransport587 = nodemailer.createTransport(buildFallbackOptions(587));
+      return await fbTransport587.sendMail(mailOptions);
     } catch (e2) {
-      console.error('[emailService] Échec de l\'envoi via fallback:', e2);
-      throw e2;
+      console.error('[emailService] Échec via fallback 587:', e2 && e2.message ? e2.message : e2);
+      // Dernière tentative: port 2525 (souvent ouvert pour les relays comme MailerSend)
+      try {
+        console.warn('[emailService] Nouvelle tentative avec fallback STARTTLS:2525 ...');
+        const fbTransport2525 = nodemailer.createTransport(buildFallbackOptions(2525));
+        return await fbTransport2525.sendMail(mailOptions);
+      } catch (e3) {
+        console.error('[emailService] Échec via fallback 2525:', e3 && e3.message ? e3.message : e3);
+        throw e3;
+      }
     }
   }
 }
