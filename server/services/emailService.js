@@ -65,12 +65,12 @@ const sendAssignmentEmail = async (ticket, assignedUser) => {
   `;
   const textContent = `Ticket ${ticket.ticketNumber} assigné. Client: ${ticket.clientInfo.firstName} ${ticket.clientInfo.lastName}.`;
   const mailOptions = {
-    from: process.env.EMAIL_FROM || 'sav@carpartsfrance.fr',
+    from: process.env.EMAIL_FROM || 'contact@carpartsfrance.fr',
     to,
     subject,
     html: htmlContent,
     text: textContent,
-    replyTo: process.env.EMAIL_REPLY_TO || 'sav@carpartsfrance.fr',
+    replyTo: process.env.EMAIL_REPLY_TO || 'contact@carpartsfrance.fr',
     headers: { 'X-Entity-Ref-ID': String(ticket.ticketNumber || '') }
   };
   try { return await safeSendMail(mailOptions); } catch (e) { console.error('[emailService] sendAssignmentEmail error:', e); return null; }
@@ -188,13 +188,13 @@ const sendSlaReminderEmail = async (ticket, assignedUser, hoursLate = 20) => {
   const textContent = `Ticket ${ticket.ticketNumber} sans réponse agent depuis ${hoursLate}h.\nClient: ${ticket.clientInfo && ticket.clientInfo.firstName ? ticket.clientInfo.firstName : ''} ${ticket.clientInfo && ticket.clientInfo.lastName ? ticket.clientInfo.lastName : ''}${ticket.clientInfo && ticket.clientInfo.email ? ' (' + ticket.clientInfo.email + ')' : ''}.`;
 
   const mailOptions = {
-    from: process.env.EMAIL_FROM || 'sav@carpartsfrance.fr',
+    from: process.env.EMAIL_FROM || 'contact@carpartsfrance.fr',
     to,
     cc: (isBreach && teamEmail) ? teamEmail : undefined,
     subject,
     html: htmlContent,
     text: textContent,
-    replyTo: process.env.EMAIL_REPLY_TO || 'sav@carpartsfrance.fr',
+    replyTo: process.env.EMAIL_REPLY_TO || 'contact@carpartsfrance.fr',
     headers: { 'X-Entity-Ref-ID': String(ticket.ticketNumber || '') }
   };
 
@@ -365,14 +365,14 @@ const sendStatusUpdateEmail = async (ticket, status, comment = '') => {
     `Suivre votre ticket: ${baseUrl}/tracking/?ticket=${ticket.ticketNumber}\n\n` +
     `L'équipe Car Parts France`;
   const mailOptions = {
-    from: process.env.EMAIL_FROM || '"Car Parts France SAV" <sav@carpartsfrance.fr>',
+    from: process.env.EMAIL_FROM || '"Car Parts France SAV" <contact@carpartsfrance.fr>',
     to: recipient,
     subject: subject,
     html: htmlContent,
     text: textContent,
-    replyTo: process.env.EMAIL_REPLY_TO || 'sav@carpartsfrance.fr',
+    replyTo: process.env.EMAIL_REPLY_TO || 'contact@carpartsfrance.fr',
     headers: { 'X-Entity-Ref-ID': String(ticket.ticketNumber || '') },
-    envelope: { from: (process.env.EMAIL_RETURN_PATH || process.env.EMAIL_USER || 'sav@carpartsfrance.fr'), to: [recipient] }
+    envelope: { from: (process.env.EMAIL_RETURN_PATH || process.env.EMAIL_USER || 'contact@carpartsfrance.fr'), to: [recipient] }
   };
 
   try {
@@ -436,15 +436,15 @@ const sendTicketCreationEmail = async (ticket) => {
     `Suivre votre ticket: ${baseUrl}/tracking/?ticket=${ticket.ticketNumber}\n\n` +
     `L'équipe Car Parts France`;
   const mailOptions = {
-    from: process.env.EMAIL_FROM || '"Car Parts France SAV" <sav@carpartsfrance.fr>',
+    from: process.env.EMAIL_FROM || '"Car Parts France SAV" <contact@carpartsfrance.fr>',
     to,
     subject: subject,
     html: htmlContent,
     text: textContent,
-    replyTo: process.env.EMAIL_REPLY_TO || 'sav@carpartsfrance.fr',
+    replyTo: process.env.EMAIL_REPLY_TO || 'contact@carpartsfrance.fr',
     headers: { 'X-Entity-Ref-ID': String(ticket.ticketNumber || '') },
     envelope: {
-      from: (process.env.EMAIL_RETURN_PATH || process.env.EMAIL_USER || 'sav@carpartsfrance.fr'),
+      from: (process.env.EMAIL_RETURN_PATH || process.env.EMAIL_USER || 'contact@carpartsfrance.fr'),
       to
     }
   };
@@ -485,12 +485,12 @@ const sendPasswordResetEmail = async (user, resetLink) => {
   `;
   const textContent = `Bonjour,\n\nPour réinitialiser votre mot de passe, ouvrez ce lien (valide 60 minutes):\n${resetLink}\n\nSi vous n'êtes pas à l'origine de cette demande, ignorez ce message.`;
   const mailOptions = {
-    from: process.env.EMAIL_FROM || '"Car Parts France SAV" <sav@carpartsfrance.fr>',
+    from: process.env.EMAIL_FROM || '"Car Parts France SAV" <contact@carpartsfrance.fr>',
     to,
     subject,
     html: htmlContent,
     text: textContent,
-    replyTo: process.env.EMAIL_REPLY_TO || 'sav@carpartsfrance.fr'
+    replyTo: process.env.EMAIL_REPLY_TO || 'contact@carpartsfrance.fr'
   };
   try {
     return await safeSendMail(mailOptions);
