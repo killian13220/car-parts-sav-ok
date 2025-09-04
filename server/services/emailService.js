@@ -354,24 +354,37 @@ async function safeSendMail(mailOptions) {
   } catch (err) {
     const transientCodes = ['ETIMEDOUT', 'ECONNECTION', 'EAI_AGAIN', 'ESOCKET'];
     const isConnIssue = err && (transientCodes.includes(err.code) || err.command === 'CONN');
-    const sameAsFallback587 = transportOptions.port === 587 && transportOptions.secure === false;
-    if (!isConnIssue || sameAsFallback587) {
+    const isPrimary587 = transportOptions.port === 587 && transportOptions.secure === false;
+    if (!isConnIssue) {
       throw err;
     }
-    try {
-      console.warn('[emailService] Connexion SMTP primaire échouée, tentative avec fallback STARTTLS:587 ...', err && err.code ? err.code : err);
-      const fbTransport587 = nodemailer.createTransport(buildFallbackOptions(587));
-      return await fbTransport587.sendMail(mailOptions);
-    } catch (e2) {
-      console.error('[emailService] Échec via fallback 587:', e2 && e2.message ? e2.message : e2);
-      // Dernière tentative: port 2525 (souvent ouvert pour les relays comme MailerSend)
+
+    if (isPrimary587) {
+      // Si le primaire est déjà 587, on saute directement à 2525
       try {
-        console.warn('[emailService] Nouvelle tentative avec fallback STARTTLS:2525 ...');
+        console.warn('[emailService] Connexion SMTP 587 échouée, tentative directe avec fallback STARTTLS:2525 ...', err && err.code ? err.code : err);
         const fbTransport2525 = nodemailer.createTransport(buildFallbackOptions(2525));
         return await fbTransport2525.sendMail(mailOptions);
       } catch (e3) {
         console.error('[emailService] Échec via fallback 2525:', e3 && e3.message ? e3.message : e3);
         throw e3;
+      }
+    } else {
+      // Sinon on tente d'abord 587 puis 2525
+      try {
+        console.warn('[emailService] Connexion SMTP primaire échouée, tentative avec fallback STARTTLS:587 ...', err && err.code ? err.code : err);
+        const fbTransport587 = nodemailer.createTransport(buildFallbackOptions(587));
+        return await fbTransport587.sendMail(mailOptions);
+      } catch (e2) {
+        console.error('[emailService] Échec via fallback 587:', e2 && e2.message ? e2.message : e2);
+        try {
+          console.warn('[emailService] Nouvelle tentative avec fallback STARTTLS:2525 ...');
+          const fbTransport2525 = nodemailer.createTransport(buildFallbackOptions(2525));
+          return await fbTransport2525.sendMail(mailOptions);
+        } catch (e3) {
+          console.error('[emailService] Échec via fallback 2525:', e3 && e3.message ? e3.message : e3);
+          throw e3;
+        }
       }
     }
   }
