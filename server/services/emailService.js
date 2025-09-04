@@ -1,0 +1,463 @@
+ const nodemailer = require('nodemailer');
+require('dotenv').config();
+
+// Configuration du transporteur d'emails
+console.log('Configuration SMTP:', {
+  host: process.env.EMAIL_HOST,
+  port: process.env.EMAIL_PORT,
+  secure: process.env.EMAIL_SECURE === 'true',
+  user: process.env.EMAIL_USER
+});
+
+// Déterminer si nous sommes en environnement de développement
+const isDevelopment = process.env.NODE_ENV !== 'production';
+
+// URL de base pour les liens dans les emails
+const baseUrl = isDevelopment ? 'http://localhost:3001' : (process.env.WEBSITE_URL || 'https://carpartsfrance.fr');
+console.log('URL de base pour les emails:', baseUrl);
+
+// Transport SMTP (préférence aux variables d'environnement)
+const transportOptions = {
+  host: process.env.EMAIL_HOST || 'smtp.hostinger.com',
+  port: Number(process.env.EMAIL_PORT || 465),
+  secure: (process.env.EMAIL_SECURE ? process.env.EMAIL_SECURE === 'true' : true),
+  auth: {
+    user: process.env.EMAIL_USER || 'sav@carpartsfrance.fr',
+    pass: process.env.EMAIL_PASS || ''
+  },
+  debug: isDevelopment
+};
+
+/**
+ * Notifie l'utilisateur assigné qu'un ticket lui a été attribué
+ * @param {Object} ticket - Le ticket complet
+ * @param {Object} assignedUser - L'utilisateur assigné (email requis)
+ */
+const sendAssignmentEmail = async (ticket, assignedUser) => {
+  const to = (assignedUser && assignedUser.email) ? String(assignedUser.email).trim() : '';
+  if (!to) return null;
+  const subject = `Nouveau ticket assigné: ${ticket.ticketNumber}`;
+  const htmlContent = `
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+      <div style="background-color: #003366; color: white; padding: 16px; text-align: center;">
+        <h2>Assignation d'un ticket</h2>
+      </div>
+      <div style="padding: 16px; border: 1px solid #eee;">
+        <p>Bonjour ${assignedUser.firstName || ''} ${assignedUser.lastName || ''},</p>
+        <p>Le ticket <strong>${ticket.ticketNumber}</strong> vous a été assigné.</p>
+        <ul>
+          <li>Client: ${ticket.clientInfo.firstName} ${ticket.clientInfo.lastName} (${ticket.clientInfo.email})</li>
+          <li>Type: ${ticket.claimType}</li>
+          <li>Statut: ${ticket.currentStatus}</li>
+          <li>Priorité: ${ticket.priority}</li>
+        </ul>
+        <p>Merci de le prendre en charge dès que possible.</p>
+      </div>
+    </div>
+  `;
+  const textContent = `Ticket ${ticket.ticketNumber} assigné. Client: ${ticket.clientInfo.firstName} ${ticket.clientInfo.lastName}.`;
+  const mailOptions = {
+    from: process.env.EMAIL_FROM || 'sav@carpartsfrance.fr',
+    to,
+    subject,
+    html: htmlContent,
+    text: textContent,
+    replyTo: process.env.EMAIL_REPLY_TO || 'sav@carpartsfrance.fr',
+    headers: { 'X-Entity-Ref-ID': String(ticket.ticketNumber || '') }
+  };
+  try { return await transporter.sendMail(mailOptions); } catch (e) { console.error('[emailService] sendAssignmentEmail error:', e); return null; }
+};
+
+/**
+ * Notifie l'équipe qu'une assistance est demandée par un agent
+ * @param {Object} ticket - Le ticket
+ * @param {Object} byUser - L'utilisateur demandeur
+ * @param {String} message - Détail de la demande
+ */
+const sendAssistanceRequestEmail = async (ticket, byUser, message = '') => {
+  const to = (process.env.SUPPORT_TEAM_EMAIL || process.env.EMAIL_USER || 'sav@carpartsfrance.fr');
+  const subject = `Demande d'assistance - Ticket ${ticket.ticketNumber}`;
+  const htmlContent = `
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+      <div style="background-color: #8a2be2; color: white; padding: 16px; text-align: center;">
+        <h2>Demande d'assistance</h2>
+      </div>
+      <div style="padding: 16px; border: 1px solid #eee;">
+        <p><strong>Ticket:</strong> ${ticket.ticketNumber}</p>
+        <p><strong>Demandée par:</strong> ${(byUser && (byUser.email || byUser.firstName)) ? (byUser.email || (byUser.firstName + ' ' + (byUser.lastName || ''))) : 'Utilisateur inconnu'}</p>
+        <p><strong>Message:</strong><br>${(String(message || '')).replace(/\n/g, '<br/>')}</p>
+      </div>
+    </div>
+  `;
+  const textContent = `Demande d'assistance sur ${ticket.ticketNumber} par ${(byUser && byUser.email) || 'inconnu'}\n${message || ''}`;
+  const mailOptions = {
+    from: process.env.EMAIL_FROM || 'sav@carpartsfrance.fr',
+    to,
+    subject,
+    html: htmlContent,
+    text: textContent,
+    replyTo: process.env.EMAIL_REPLY_TO || 'sav@carpartsfrance.fr',
+    headers: { 'X-Entity-Ref-ID': String(ticket.ticketNumber || '') }
+  };
+  try { return await transporter.sendMail(mailOptions); } catch (e) { console.error('[emailService] sendAssistanceRequestEmail error:', e); return null; }
+};
+
+/**
+ * Notifie l'équipe d'une escalade de ticket
+ * @param {Object} ticket - Le ticket
+ * @param {String} reason - Raison de l'escalade
+ * @param {Object} byUser - Utilisateur qui escalade (admin)
+ */
+const sendEscalationEmail = async (ticket, reason = '', byUser) => {
+  const to = (process.env.SUPPORT_TEAM_EMAIL || process.env.EMAIL_USER || 'sav@carpartsfrance.fr');
+  const subject = `Escalade - Ticket ${ticket.ticketNumber}`;
+  const htmlContent = `
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+      <div style="background-color: #b91c1c; color: white; padding: 16px; text-align: center;">
+        <h2>Escalade de ticket</h2>
+      </div>
+      <div style="padding: 16px; border: 1px solid #eee;">
+        <p><strong>Ticket:</strong> ${ticket.ticketNumber}</p>
+        <p><strong>Par:</strong> ${(byUser && (byUser.email || byUser.firstName)) ? (byUser.email || (byUser.firstName + ' ' + (byUser.lastName || ''))) : 'Administrateur'}</p>
+        <p><strong>Raison:</strong><br>${(String(reason || '')).replace(/\n/g, '<br/>')}</p>
+      </div>
+    </div>
+  `;
+  const textContent = `Escalade du ticket ${ticket.ticketNumber}. Raison: ${reason || ''}`;
+  const mailOptions = {
+    from: process.env.EMAIL_FROM || 'sav@carpartsfrance.fr',
+    to,
+    subject,
+    html: htmlContent,
+    text: textContent,
+    replyTo: process.env.EMAIL_REPLY_TO || 'sav@carpartsfrance.fr',
+    headers: { 'X-Entity-Ref-ID': String(ticket.ticketNumber || '') }
+  };
+  try { return await transporter.sendMail(mailOptions); } catch (e) { console.error('[emailService] sendEscalationEmail error:', e); return null; }
+};
+
+/**
+ * Envoie un email de rappel/alerte SLA à l'agent (ou à l'équipe en secours)
+ * @param {Object} ticket - Le ticket concerné
+ * @param {Object} assignedUser - L'utilisateur assigné (peut être nul)
+ * @param {number} hoursLate - Heures sans réponse agent (ex: 20 pour pré-alerte, 24 pour alerte)
+ */
+const sendSlaReminderEmail = async (ticket, assignedUser, hoursLate = 20) => {
+  const agentEmail = (assignedUser && assignedUser.email) ? String(assignedUser.email).trim() : '';
+  const teamEmail = process.env.SUPPORT_TEAM_EMAIL ? String(process.env.SUPPORT_TEAM_EMAIL).trim() : '';
+  const to = agentEmail || teamEmail;
+  if (!to) {
+    console.warn('[emailService] Aucun destinataire pour sendSlaReminderEmail');
+    return null;
+  }
+
+  const isBreach = Number(hoursLate) >= 24;
+  const subject = `${isBreach ? 'ALERTE SLA' : 'Rappel SLA'} ${hoursLate}h - Ticket ${ticket.ticketNumber}`;
+
+  const headerColor = isBreach ? '#b91c1c' : '#d97706'; // rouge si alerte, ambre si rappel
+  const htmlContent = `
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+      <div style="background-color: ${headerColor}; color: white; padding: 16px; text-align: center;">
+        <h2>${isBreach ? 'Alerte SLA 24h' : `Rappel SLA ${hoursLate}h`}</h2>
+      </div>
+      <div style="padding: 16px; border: 1px solid #eee;">
+        <p>Bonjour ${(assignedUser && (assignedUser.firstName || assignedUser.email)) ? (assignedUser.firstName || assignedUser.email) : 'équipe'},</p>
+        <p>Le ticket <strong>${ticket.ticketNumber}</strong> n'a pas reçu de réponse agent depuis <strong>${hoursLate}h</strong>.</p>
+        <ul>
+          <li>Client: ${ticket.clientInfo && ticket.clientInfo.firstName ? ticket.clientInfo.firstName : ''} ${ticket.clientInfo && ticket.clientInfo.lastName ? ticket.clientInfo.lastName : ''} ${ticket.clientInfo && ticket.clientInfo.email ? '(' + ticket.clientInfo.email + ')' : ''}</li>
+          <li>Type: ${ticket.claimType || '-'}</li>
+          <li>Statut: ${ticket.currentStatus || '-'}</li>
+          <li>Priorité: ${ticket.priority || '-'}</li>
+        </ul>
+        <div style="margin: 20px 0; text-align: center;">
+          <a href="${baseUrl}/tracking/?ticket=${ticket.ticketNumber}" style="background-color: #003366; color: white; padding: 10px 16px; text-decoration: none; border-radius: 4px; font-weight: bold;">Voir le ticket</a>
+        </div>
+        <p style="color: ${isBreach ? '#991b1b' : '#92400e'};">${isBreach ? 'Escalade recommandée si non traité immédiatement.' : 'Merci de répondre au client afin de respecter la SLA.'}</p>
+      </div>
+    </div>
+  `;
+
+  const textContent = `Ticket ${ticket.ticketNumber} sans réponse agent depuis ${hoursLate}h.\nClient: ${ticket.clientInfo && ticket.clientInfo.firstName ? ticket.clientInfo.firstName : ''} ${ticket.clientInfo && ticket.clientInfo.lastName ? ticket.clientInfo.lastName : ''}${ticket.clientInfo && ticket.clientInfo.email ? ' (' + ticket.clientInfo.email + ')' : ''}.`;
+
+  const mailOptions = {
+    from: process.env.EMAIL_FROM || 'sav@carpartsfrance.fr',
+    to,
+    cc: (isBreach && teamEmail) ? teamEmail : undefined,
+    subject,
+    html: htmlContent,
+    text: textContent,
+    replyTo: process.env.EMAIL_REPLY_TO || 'sav@carpartsfrance.fr',
+    headers: { 'X-Entity-Ref-ID': String(ticket.ticketNumber || '') }
+  };
+
+  try {
+    return await transporter.sendMail(mailOptions);
+  } catch (e) {
+    console.error('[emailService] sendSlaReminderEmail error:', e);
+    return null;
+  }
+};
+
+// DKIM (optionnel si variables fournies)
+if (process.env.DKIM_PRIVATE_KEY && process.env.DKIM_DOMAIN && process.env.DKIM_SELECTOR) {
+  transportOptions.dkim = {
+    domainName: process.env.DKIM_DOMAIN,
+    keySelector: process.env.DKIM_SELECTOR,
+    privateKey: process.env.DKIM_PRIVATE_KEY
+  };
+}
+
+const transporter = nodemailer.createTransport(transportOptions);
+
+// Alerter en cas d'absence de mot de passe SMTP
+if (!process.env.EMAIL_PASS || String(process.env.EMAIL_PASS).trim() === '') {
+  console.warn('[emailService] Attention: EMAIL_PASS n\'est pas défini. L\'authentification SMTP échouera (EAUTH) et aucun email ne sera envoyé.');
+}
+
+// Vérifier la connexion SMTP en développement pour diagnostiquer rapidement
+if (isDevelopment) {
+  transporter.verify((err, success) => {
+    if (err) {
+      console.error('[emailService] SMTP verify a échoué:', err && err.message ? err.message : err);
+    } else {
+      console.log('[emailService] SMTP prêt à envoyer des emails.');
+    }
+  });
+}
+
+/**
+ * Envoie un email de notification au client lors d'un changement de statut de son ticket
+ * @param {Object} ticket - Le ticket avec les informations client
+ * @param {String} status - Le nouveau statut du ticket
+ * @param {String} comment - Commentaire optionnel à inclure dans l'email
+ * @returns {Promise} - Résultat de l'envoi d'email
+ */
+const sendStatusUpdateEmail = async (ticket, status, comment = '') => {
+  // Normaliser et valider l'email destinataire
+  const to = (ticket && ticket.clientInfo && ticket.clientInfo.email)
+    ? String(ticket.clientInfo.email).trim()
+    : '';
+  if (!to) {
+    console.log('Impossible d\'envoyer un email: adresse email du client manquante');
+    return null;
+  }
+
+  // Traduire le statut en texte plus lisible
+  const statusTranslation = {
+    'nouveau': 'Nouveau',
+    'en_analyse': 'En cours d\'analyse',
+    'info_complementaire': 'Informations complémentaires requises',
+    'validé': 'Validé',
+    'refusé': 'Refusé',
+    'en_cours_traitement': 'En cours de traitement',
+    'expédié': 'Expédié',
+    'clôturé': 'Clôturé'
+  };
+
+  // Construire le sujet et le corps de l'email
+  const subject = `Mise à jour de votre ticket SAV ${ticket.ticketNumber}`;
+  const preheader = `Statut mis à jour: ${statusTranslation[status] || status} pour le ticket ${ticket.ticketNumber}`;
+  
+  let htmlContent = `
+    <span style="display:none!important;opacity:0;color:transparent;visibility:hidden;height:0;width:0;">${preheader}</span>
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+      <div style="background-color: #003366; color: white; padding: 20px; text-align: center;">
+        <h1>Car Parts France - Service Après-Vente</h1>
+      </div>
+      <div style="padding: 20px; border: 1px solid #ddd; background-color: #f9f9f9;">
+        <h2>Mise à jour de votre ticket SAV</h2>
+        <p>Bonjour ${ticket.clientInfo.firstName} ${ticket.clientInfo.lastName},</p>
+        <p>Nous vous informons que le statut de votre ticket SAV <strong>${ticket.ticketNumber}</strong> a été mis à jour.</p>
+        
+        <div style="background-color: #eef6ff; border-left: 4px solid #003366; padding: 15px; margin: 20px 0;">
+          <p><strong>Nouveau statut :</strong> ${statusTranslation[status] || status}</p>
+        </div>
+  `;
+
+  // Ajouter le commentaire s'il existe
+  if (comment) {
+    htmlContent += `
+        <div style="background-color: #f0f0f0; padding: 15px; margin: 20px 0; border-radius: 5px;">
+          <p><strong>Message de notre équipe :</strong></p>
+          <p>${comment.replace(/\n/g, '<br>')}</p>
+        </div>
+    `;
+  }
+
+  // Ajouter le bouton de suivi, lien de secours et le pied de page
+  htmlContent += `
+        <div style="margin: 30px 0; text-align: center;">
+          <a href="${baseUrl}/tracking/?ticket=${ticket.ticketNumber}" style="background-color: #E60000; color: white; padding: 12px 20px; text-decoration: none; border-radius: 4px; font-weight: bold; display: inline-block;">Suivre votre ticket</a>
+        </div>
+        <p style="font-size: 12px; color: #666;">Si le bouton ne fonctionne pas, copiez/collez ce lien dans votre navigateur :<br>
+          <a href="${baseUrl}/tracking/?ticket=${ticket.ticketNumber}" style="color: #003366;">${baseUrl}/tracking/?ticket=${ticket.ticketNumber}</a>
+        </p>
+        <p>Nous vous remercions de votre confiance.</p>
+        <p>L'équipe Car Parts France</p>
+      </div>
+      <div style="text-align: center; padding: 20px; color: #666; font-size: 12px;">
+        <p>Ce message est envoyé automatiquement, merci de ne pas y répondre directement.</p>
+        <p>© ${new Date().getFullYear()} Car Parts France - Tous droits réservés</p>
+      </div>
+    </div>
+  `;
+
+  // Normaliser le destinataire
+  const recipient = String(ticket.clientInfo.email || '').trim();
+  if (!recipient) {
+    console.warn('[emailService] Aucun destinataire pour email de mise à jour de statut (ticket', ticket.ticketNumber, ')');
+    return null;
+  }
+
+  // Options de l'email
+  const textContent = `Bonjour ${ticket.clientInfo.firstName} ${ticket.clientInfo.lastName},\n\n` +
+    `Le statut de votre ticket SAV ${ticket.ticketNumber} a été mis à jour en: ${statusTranslation[status] || status}.\n` +
+    (comment ? `\nMessage de notre équipe:\n${comment}\n\n` : '\n') +
+    `Suivre votre ticket: ${baseUrl}/tracking/?ticket=${ticket.ticketNumber}\n\n` +
+    `L'équipe Car Parts France`;
+  const mailOptions = {
+    from: process.env.EMAIL_FROM || '"Car Parts France SAV" <sav@carpartsfrance.fr>',
+    to: recipient,
+    subject: subject,
+    html: htmlContent,
+    text: textContent,
+    replyTo: process.env.EMAIL_REPLY_TO || 'sav@carpartsfrance.fr',
+    headers: { 'X-Entity-Ref-ID': String(ticket.ticketNumber || '') },
+    envelope: { from: (process.env.EMAIL_RETURN_PATH || process.env.EMAIL_USER || 'sav@carpartsfrance.fr'), to: [recipient] }
+  };
+
+  try {
+    // Envoyer l'email
+    const info = await transporter.sendMail(mailOptions);
+    console.log('Email envoyé:', info.messageId);
+    return info;
+  } catch (error) {
+    console.error('Erreur lors de l\'envoi de l\'email:', error);
+    return null;
+  }
+};
+
+/**
+ * Envoie un email de confirmation au client lors de la création d'un nouveau ticket
+ * @param {Object} ticket - Le ticket avec les informations client
+ * @returns {Promise} - Résultat de l'envoi d'email
+ */
+const sendTicketCreationEmail = async (ticket) => {
+  // Normaliser et valider l'email destinataire
+  const to = (ticket && ticket.clientInfo && ticket.clientInfo.email)
+    ? String(ticket.clientInfo.email).trim()
+    : '';
+  if (!to) {
+    console.log('Impossible d\'envoyer un email: adresse email du client manquante');
+    return null;
+  }
+
+  // Construire le sujet et le corps de l'email
+  const subject = `Confirmation de votre demande SAV ${ticket.ticketNumber}`;
+  const preheader = `Nous avons bien reçu votre demande SAV ${ticket.ticketNumber}`;
+  
+  let htmlContent = `
+    <span style="display:none!important;opacity:0;color:transparent;visibility:hidden;height:0;width:0;">${preheader}</span>
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+      <div style="background-color: #003366; color: white; padding: 20px; text-align: center;">
+        <h1>Car Parts France - Service Après-Vente</h1>
+      </div>
+      <div style="padding: 20px; border: 1px solid #ddd; background-color: #f9f9f9;">
+        <h2>Confirmation de votre demande SAV</h2>
+        <p>Bonjour ${ticket.clientInfo.firstName} ${ticket.clientInfo.lastName},</p>
+        <p>Nous avons bien reçu votre demande de SAV concernant <strong>${ticket.partInfo.partType === 'autres' ? 'une pièce' : 'un(e) ' + ticket.partInfo.partType.replace('_', ' ')}</strong>.</p>
+        <p>Votre numéro de ticket est : <strong style="font-size: 18px;">${ticket.ticketNumber}</strong></p>
+        <p>Notre équipe technique va étudier votre demande dans les plus brefs délais.</p>
+        <div style="margin: 30px 0; text-align: center;">
+          <a href="${baseUrl}/tracking/?ticket=${ticket.ticketNumber}" style="background-color: #E60000; color: white; padding: 12px 20px; text-decoration: none; border-radius: 4px; font-weight: bold;">Suivre votre ticket</a>
+        </div>
+        <p>Vous recevrez des notifications par email à chaque mise à jour de votre ticket.</p>
+        <p>Si vous avez des questions, n'hésitez pas à nous contacter en répondant à cet email ou en appelant notre service client.</p>
+      </div>
+      <div style="padding: 15px; text-align: center; font-size: 12px; color: #666;">
+        <p>Car Parts France - Service Après-Vente</p>
+        <p>Tél: 01 23 45 67 89 | Email: sav@carpartsfrance.fr</p>
+      </div>
+    </div>
+  `;
+
+  // Options de l'email
+  const textContent = `Bonjour ${ticket.clientInfo.firstName} ${ticket.clientInfo.lastName},\n\n` +
+    `Nous confirmons la création de votre demande SAV. Votre numéro de ticket est ${ticket.ticketNumber}.\n` +
+    `Suivre votre ticket: ${baseUrl}/tracking/?ticket=${ticket.ticketNumber}\n\n` +
+    `L'équipe Car Parts France`;
+  const mailOptions = {
+    from: process.env.EMAIL_FROM || '"Car Parts France SAV" <sav@carpartsfrance.fr>',
+    to,
+    subject: subject,
+    html: htmlContent,
+    text: textContent,
+    replyTo: process.env.EMAIL_REPLY_TO || 'sav@carpartsfrance.fr',
+    headers: { 'X-Entity-Ref-ID': String(ticket.ticketNumber || '') },
+    envelope: {
+      from: (process.env.EMAIL_RETURN_PATH || process.env.EMAIL_USER || 'sav@carpartsfrance.fr'),
+      to
+    }
+  };
+
+  try {
+    // Envoyer l'email
+    const info = await transporter.sendMail(mailOptions);
+    console.log('Email de confirmation envoyé:', info.messageId);
+    return info;
+  } catch (error) {
+    console.error('Erreur lors de l\'envoi de l\'email de confirmation:', error);
+    return null;
+  }
+};
+
+// Envoi email de réinitialisation de mot de passe
+const sendPasswordResetEmail = async (user, resetLink) => {
+  const to = String(user.email || '').trim();
+  if (!to) return null;
+  const subject = 'Réinitialisation de votre mot de passe SAV';
+  const htmlContent = `
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+      <div style="background-color: #003366; color: white; padding: 16px; text-align: center;">
+        <h2>Réinitialisation du mot de passe</h2>
+      </div>
+      <div style="padding: 16px; border: 1px solid #eee;">
+        <p>Bonjour ${user.firstName || ''} ${user.lastName || ''},</p>
+        <p>Vous avez demandé à réinitialiser votre mot de passe. Cliquez sur le bouton ci-dessous:</p>
+        <div style="text-align: center; margin: 20px 0;">
+          <a href="${resetLink}" style="background-color: #E60000; color: #fff; padding: 10px 16px; text-decoration: none; border-radius: 4px; display: inline-block;">Choisir un nouveau mot de passe</a>
+        </div>
+        <p>Si le bouton ne fonctionne pas, copiez ce lien dans votre navigateur:<br>
+          <a href="${resetLink}">${resetLink}</a>
+        </p>
+        <p style="color:#666; font-size:12px;">Ce lien expire dans 60 minutes.</p>
+      </div>
+    </div>
+  `;
+  const textContent = `Bonjour,\n\nPour réinitialiser votre mot de passe, ouvrez ce lien (valide 60 minutes):\n${resetLink}\n\nSi vous n'êtes pas à l'origine de cette demande, ignorez ce message.`;
+  const mailOptions = {
+    from: process.env.EMAIL_FROM || '"Car Parts France SAV" <sav@carpartsfrance.fr>',
+    to,
+    subject,
+    html: htmlContent,
+    text: textContent,
+    replyTo: process.env.EMAIL_REPLY_TO || 'sav@carpartsfrance.fr'
+  };
+  try {
+    return await transporter.sendMail(mailOptions);
+  } catch (e) {
+    console.error('[emailService] sendPasswordResetEmail error:', e);
+    return null;
+  }
+};
+
+module.exports = {
+  sendStatusUpdateEmail,
+  sendTicketCreationEmail,
+  // Nouvelles notifications
+  sendAssignmentEmail,
+  sendAssistanceRequestEmail,
+  sendEscalationEmail,
+  sendSlaReminderEmail,
+  sendPasswordResetEmail
+};
