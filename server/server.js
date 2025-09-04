@@ -228,8 +228,13 @@ app.post('/api/auth/request-password-reset', resetLimiter, async (req, res) => {
     const origin = `${req.protocol}://${req.get('host')}`;
     const resetLink = `${origin}/admin/reset-password?token=${token}&email=${encodeURIComponent(email)}`;
 
-    // Envoyer l'email
-    await sendPasswordResetEmail(user, resetLink);
+    // Envoyer l'email (ne bloque pas la réponse au client si l'envoi échoue)
+    try {
+      await sendPasswordResetEmail(user, resetLink);
+    } catch (mailErr) {
+      console.error('[auth] request-password-reset email send failed:', mailErr);
+      // On ne renvoie pas d'erreur au client pour éviter de révéler des détails et améliorer l'UX
+    }
     return res.json({ success: true, message: 'Si un compte existe, un email a été envoyé' });
   } catch (e) {
     console.error('[auth] request-password-reset error:', e);
