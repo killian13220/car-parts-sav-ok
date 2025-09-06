@@ -22,6 +22,7 @@ const setupStatsRoutes = require('./stats-api');
 const { authenticateAdmin: adminAuthMW } = require('./middleware/auth');
 const { startSlaWatcher } = require('./jobs/slaWatcher');
 require('dotenv').config();
+const { isS3Enabled, uploadBuffer, streamToResponse } = require('./services/storage');
 
 // Initialisation de l'application Express
 const app = express();
@@ -143,8 +144,12 @@ try {
 console.log('UPLOADS_DIR env =', process.env.UPLOADS_DIR, ' -> resolved uploadsDir =', uploadsDir);
 console.log('Static uploads mapping order:', altUploadDirs);
 
+// Activer le stockage S3/R2 si configuré
+const S3_ENABLED = isS3Enabled();
+console.log('Storage driver:', S3_ENABLED ? 's3' : 'local');
+
 // Configuration de multer pour le téléchargement de fichiers
-const storage = multer.diskStorage({
+const diskStorage = multer.diskStorage({
   destination: (req, file, cb) => {
     cb(null, uploadsDir);
   },
@@ -159,7 +164,7 @@ const storage = multer.diskStorage({
 const MAX_FILE_SIZE_MB = parseInt(process.env.UPLOAD_MAX_FILE_SIZE_MB || '25', 10);
 
 const upload = multer({ 
-  storage: storage,
+  storage: S3_ENABLED ? multer.memoryStorage() : diskStorage,
   limits: { fileSize: MAX_FILE_SIZE_MB * 1024 * 1024 }, // Limite en MB
   fileFilter: (req, file, cb) => {
     // Vérifier les types de fichiers autorisés
@@ -174,6 +179,20 @@ const upload = multer({
     }
   }
 });
+
+// En mode S3/R2, exposer une route /uploads/:key qui streame depuis le bucket
+if (S3_ENABLED) {
+  app.get('/uploads/:key', async (req, res) => {
+    try {
+      const key = String(req.params.key || '').trim();
+      if (!key) return res.status(400).send('Clé manquante');
+      await streamToResponse(res, key);
+    } catch (e) {
+      console.error('[uploads] Erreur de lecture depuis R2:', e && e.message ? e.message : e);
+      return res.status(404).send('Fichier non trouvé');
+    }
+  });
+}
 
 // Servir les fichiers statiques
 app.use(express.static(path.join(__dirname, '../')));
@@ -460,7 +479,8 @@ app.post('/api/tickets', upload.array('documents', 10), async (req, res) => {
       // Récupérer les types de documents
       const documentTypes = Array.isArray(req.body.documentTypes) ? req.body.documentTypes : [req.body.documentTypes];
       
-      req.files.forEach((file, index) => {
+      for (let index = 0; index < req.files.length; index++) {
+        const file = req.files[index];
         // Mapper les types de documents du formulaire vers les types autorisés dans le schéma
         let documentType = 'documents_autres'; // Type par défaut
         
@@ -486,15 +506,32 @@ app.post('/api/tickets', upload.array('documents', 10), async (req, res) => {
         
         console.log(`Mappage de type de document: ${formDocType} -> ${documentType}`);
         
+        // Déterminer le chemin/clé stockée selon le driver
+        let storedPath = '';
+        if (S3_ENABLED) {
+          const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+          const ext = path.extname(file.originalname);
+          const key = `${file.fieldname}-${uniqueSuffix}${ext}`;
+          try {
+            await uploadBuffer(key, file.mimetype, file.buffer);
+            storedPath = `/uploads/${key}`;
+          } catch (upErr) {
+            console.error('[upload] Erreur upload R2:', upErr && upErr.message ? upErr.message : upErr);
+            throw upErr;
+          }
+        } else {
+          storedPath = file.path;
+        }
+        
         ticketData.documents.push({
           type: documentType,
           fileName: sanitizeFileName(file.originalname),
-          filePath: file.path,
+          filePath: storedPath,
           fileType: file.mimetype,
           uploadedBy: 'client',
           uploadDate: new Date()
         });
-      });
+      }
     }
     
     // Créer le ticket dans la base de données
@@ -1723,9 +1760,24 @@ app.post('/api/tickets/additional-info', upload.array('files', 10), async (req, 
     if (req.files && req.files.length > 0) {
       console.log(`Traitement de ${req.files.length} fichiers téléchargés...`);
       for (const file of req.files) {
+        let storedPath = '';
+        if (S3_ENABLED) {
+          const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+          const ext = path.extname(file.originalname);
+          const key = `${file.fieldname}-${uniqueSuffix}${ext}`;
+          try {
+            await uploadBuffer(key, file.mimetype, file.buffer);
+            storedPath = `/uploads/${key}`;
+          } catch (upErr) {
+            console.error('[upload+info] Erreur upload R2:', upErr && upErr.message ? upErr.message : upErr);
+            throw upErr;
+          }
+        } else {
+          storedPath = file.path;
+        }
         const newDocument = {
           fileName: sanitizeFileName(file.originalname),  // Nom de fichier nettoyé
-          filePath: file.path,         // Utiliser le même format que pour les documents initiaux
+          filePath: storedPath,         // Chemin public (local) ou URL proxy (/uploads/key) en S3
           fileType: file.mimetype,     // Utiliser le même format que pour les documents initiaux
           type: 'documents_autres',    // Utiliser une valeur autorisée dans l'énumération
           uploadedBy: isAdminMessage ? 'admin' : 'client',
@@ -1733,7 +1785,7 @@ app.post('/api/tickets/additional-info', upload.array('files', 10), async (req, 
           size: file.size
         };
         uploadedFiles.push(newDocument);
-        console.log(`Fichier traité: ${file.originalname}, chemin: ${file.path}`);
+        console.log(`Fichier traité: ${file.originalname}, chemin: ${storedPath}`);
       }
       
       // Ajouter les nouveaux fichiers au ticket
