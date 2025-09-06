@@ -14,6 +14,15 @@
 
 const { Readable } = require('stream');
 
+// Nettoie les variables d'environnement: supprime espaces et guillemets autour
+function cleanEnv(val) {
+  try {
+    return String(val ?? '').trim().replace(/^['"]|['"]$/g, '');
+  } catch (_) {
+    return '';
+  }
+}
+
 let S3Client, PutObjectCommand, GetObjectCommand;
 try {
   ({ S3Client, PutObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3'));
@@ -21,7 +30,7 @@ try {
   // Dépendance pas encore installée, pas bloquant tant que le mode S3 n'est pas activé
 }
 
-const USE_S3 = String(process.env.STORAGE_DRIVER || '').toLowerCase() === 's3';
+const USE_S3 = cleanEnv(process.env.STORAGE_DRIVER).toLowerCase() === 's3';
 
 let s3 = null;
 function getS3Client() {
@@ -29,10 +38,10 @@ function getS3Client() {
   if (s3) return s3;
   if (!S3Client) throw new Error('Le module @aws-sdk/client-s3 est manquant. Installez-le d\'abord.');
 
-  const region = process.env.S3_REGION || 'auto';
-  const endpoint = process.env.S3_ENDPOINT || '';
-  const accessKeyId = process.env.S3_ACCESS_KEY_ID || '';
-  const secretAccessKey = process.env.S3_SECRET_ACCESS_KEY || '';
+  const region = cleanEnv(process.env.S3_REGION) || 'auto';
+  const endpoint = cleanEnv(process.env.S3_ENDPOINT);
+  const accessKeyId = cleanEnv(process.env.S3_ACCESS_KEY_ID);
+  const secretAccessKey = cleanEnv(process.env.S3_SECRET_ACCESS_KEY);
 
   if (!endpoint || !accessKeyId || !secretAccessKey) {
     throw new Error('Configuration S3/R2 incomplète: S3_ENDPOINT, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY requis');
