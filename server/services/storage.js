@@ -65,7 +65,6 @@ async function uploadBuffer(key, contentType, buffer) {
     Key: key,
     Body: buffer,
     ContentType: contentType || 'application/octet-stream',
-    ACL: 'private',
   });
   await client.send(cmd);
   return true;
