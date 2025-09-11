@@ -16,6 +16,7 @@ const StatusUpdate = require('./models/status');
 const User = require('./models/user');
 const ResponseTemplate = require('./models/responseTemplate');
 const Notification = require('./models/notification');
+const Documentation = require('./models/documentation');
 const bcrypt = require('bcryptjs');
 const { sendStatusUpdateEmail, sendTicketCreationEmail, sendAssignmentEmail, sendAssistanceRequestEmail, sendEscalationEmail, sendSlaReminderEmail, sendPasswordResetEmail } = require('./services/emailService');
 const setupStatsRoutes = require('./stats-api');
@@ -891,6 +892,7 @@ app.delete('/api/admin/templates/:id', authenticateAdmin, ensureAdminOrAgent, as
 // --- Édition de la documentation Markdown (admin/docs) ---
 // Sécurisation: accès Admin uniquement, restriction au répertoire admin/docs, extensions .md uniquement
 const docsBaseDir = path.join(__dirname, '../admin/docs');
+const DOCS_STORAGE = (process.env.DOCS_STORAGE || 'db').toLowerCase();
 
 function isSubPath(parent, child) {
   const rel = path.relative(parent, child);
