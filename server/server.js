@@ -1047,8 +1047,24 @@ app.get('/api/admin/docs/content', authenticateAdmin, ensureAdmin, async (req, r
   try {
     const rel = sanitizeDocRelPath(req.query.path || '');
     if (DOCS_STORAGE === 'db') {
-      const doc = await Documentation.findOne({ path: rel }).lean();
-      if (!doc) return res.status(404).json({ success: false, message: 'Fichier non trouvé' });
+      let doc = await Documentation.findOne({ path: rel }).lean();
+      if (!doc) {
+        // Fallback: tenter de lire depuis le FS puis insérer en DB pour ne pas casser l'UX
+        try {
+          const abs = safeDocAbsolutePath(rel);
+          const content = await fs.promises.readFile(abs, 'utf8');
+          const size = Buffer.byteLength(content, 'utf8');
+          const name = path.basename(rel);
+          await Documentation.updateOne(
+            { path: rel },
+            { $set: { path: rel, name, content, size } },
+            { upsert: true }
+          );
+          return res.json({ success: true, path: rel, content });
+        } catch (_) {
+          return res.status(404).json({ success: false, message: 'Fichier non trouvé' });
+        }
+      }
       return res.json({ success: true, path: rel, content: String(doc.content || '') });
     } else {
       const abs = safeDocAbsolutePath(rel);
