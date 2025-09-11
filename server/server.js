@@ -33,6 +33,11 @@ app.set('trust proxy', 1);
 // Connexion à MongoDB
 connectDB();
 
+// Quand la connexion DB est ouverte, lancer l'import auto si nécessaire
+mongoose.connection.once('open', () => {
+  try { autoImportDocsFromFSIfEmpty(); } catch (_) {}
+});
+
 // Seed default response templates if collection is empty
 async function seedResponseTemplates() {
   try {
@@ -904,14 +909,37 @@ function safeDocAbsolutePath(relPath = '') {
   return abs;
 }
 
+// Normaliser et sécuriser un chemin relatif de documentation pour stockage en base
+function sanitizeDocRelPath(relPath = '') {
+  const raw = String(relPath || '').trim();
+  if (!raw) throw new Error('Paramètre path requis');
+  // retirer les slashes initiaux
+  const noLead = raw.replace(/^\/+/, '');
+  // normaliser et utiliser des slashes POSIX
+  const normalizedFS = path.normalize(noLead);
+  const normalized = normalizedFS.replace(/\\/g, '/');
+  if (normalized.includes('..')) {
+    throw new Error('Chemin invalide');
+  }
+  if (!normalized.toLowerCase().endsWith('.md')) {
+    throw new Error('Seuls les fichiers .md sont autorisés');
+  }
+  return normalized;
+}
+
+// Lister récursivement les fichiers .md (fallback FS)
 async function listMarkdownFilesRecursive(dir, basePrefix = '') {
   const out = [];
-  const entries = await fs.promises.readdir(dir, { withFileTypes: true });
+  let entries = [];
+  try {
+    entries = await fs.promises.readdir(dir, { withFileTypes: true });
+  } catch {
+    return out;
+  }
   for (const ent of entries) {
     const abs = path.join(dir, ent.name);
     const rel = path.join(basePrefix, ent.name);
     if (ent.isDirectory()) {
-      // Limiter la profondeur de navigation à l'arborescence existante
       const nested = await listMarkdownFilesRecursive(abs, rel);
       out.push(...nested);
     } else if (ent.isFile() && ent.name.toLowerCase().endsWith('.md')) {
@@ -923,19 +951,69 @@ async function listMarkdownFilesRecursive(dir, basePrefix = '') {
           size: st.size,
           mtime: st.mtimeMs
         });
-      } catch (_) {}
+      } catch {}
     }
   }
-  // Trier par chemin
   out.sort((a, b) => a.path.localeCompare(b.path));
   return out;
+}
+
+// Import automatique des docs FS vers DB si collection vide et stockage DB activé
+async function autoImportDocsFromFSIfEmpty() {
+  try {
+    if (DOCS_STORAGE !== 'db') return;
+    const count = await Documentation.estimatedDocumentCount();
+    if (count > 0) return;
+    const list = await listMarkdownFilesRecursive(docsBaseDir, '');
+    if (!list || list.length === 0) return;
+    let imported = 0;
+    for (const f of list) {
+      const abs = safeDocAbsolutePath(f.path);
+      let content = '';
+      try { content = await fs.promises.readFile(abs, 'utf8'); } catch {}
+      const size = Buffer.byteLength(String(content || ''), 'utf8');
+      const name = path.basename(f.path);
+      try {
+        await Documentation.updateOne(
+          { path: f.path },
+          { $set: { path: f.path, name, content, size } },
+          { upsert: true }
+        );
+        imported++;
+      } catch (e) {
+        // Ignorer les doublons éventuels en cas de concurrence de démarrage
+        if (e && e.code === 11000) {
+          continue;
+        }
+        throw e;
+      }
+    }
+    console.log(`[docs] Import automatique terminé: ${imported} documents importés depuis admin/docs vers la DB`);
+  } catch (e) {
+    console.error('[docs] Échec import automatique FS->DB:', e && e.message ? e.message : e);
+  }
 }
 
 // Lister les fichiers .md sous admin/docs
 app.get('/api/admin/docs', authenticateAdmin, ensureAdmin, async (req, res) => {
   try {
-    const list = await listMarkdownFilesRecursive(docsBaseDir, '');
-    res.json({ success: true, files: list });
+    let files = [];
+    if (DOCS_STORAGE === 'db') {
+      const docs = await Documentation.find({}, 'path name size updatedAt content').sort({ path: 1 }).lean();
+      files = docs.map(d => ({
+        path: d.path,
+        name: d.name,
+        size: typeof d.size === 'number' ? d.size : Buffer.byteLength(String(d.content || ''), 'utf8'),
+        mtime: d.updatedAt ? new Date(d.updatedAt).getTime() : Date.now()
+      }));
+      // Fallback: si la DB est vide, retourner le listing FS pour ne rien casser le premier chargement
+      if (!files || files.length === 0) {
+        files = await listMarkdownFilesRecursive(docsBaseDir, '');
+      }
+    } else {
+      files = await listMarkdownFilesRecursive(docsBaseDir, '');
+    }
+    res.json({ success: true, files });
   } catch (error) {
     console.error('Erreur listage docs:', error);
     res.status(500).json({ success: false, message: 'Erreur serveur' });
@@ -945,8 +1023,19 @@ app.get('/api/admin/docs', authenticateAdmin, ensureAdmin, async (req, res) => {
 // Version publique (lecture seule) pour la page #docs
 app.get('/api/docs', async (req, res) => {
   try {
-    const list = await listMarkdownFilesRecursive(docsBaseDir, '');
-    res.json({ success: true, files: list });
+    let files = [];
+    if (DOCS_STORAGE === 'db') {
+      const docs = await Documentation.find({}, 'path name size updatedAt content').sort({ path: 1 }).lean();
+      files = docs.map(d => ({
+        path: d.path,
+        name: d.name,
+        size: typeof d.size === 'number' ? d.size : Buffer.byteLength(String(d.content || ''), 'utf8'),
+        mtime: d.updatedAt ? new Date(d.updatedAt).getTime() : Date.now()
+      }));
+    } else {
+      files = await listMarkdownFilesRecursive(docsBaseDir, '');
+    }
+    res.json({ success: true, files });
   } catch (error) {
     console.error('Erreur listage docs (public):', error);
     res.status(500).json({ success: false, message: 'Erreur serveur' });
@@ -956,11 +1045,16 @@ app.get('/api/docs', async (req, res) => {
 // Lire le contenu d'un fichier .md
 app.get('/api/admin/docs/content', authenticateAdmin, ensureAdmin, async (req, res) => {
   try {
-    const rel = String(req.query.path || '').trim();
-    if (!rel) return res.status(400).json({ success: false, message: 'Paramètre path requis' });
-    const abs = safeDocAbsolutePath(rel);
-    const content = await fs.promises.readFile(abs, 'utf8');
-    res.json({ success: true, path: rel, content });
+    const rel = sanitizeDocRelPath(req.query.path || '');
+    if (DOCS_STORAGE === 'db') {
+      const doc = await Documentation.findOne({ path: rel }).lean();
+      if (!doc) return res.status(404).json({ success: false, message: 'Fichier non trouvé' });
+      return res.json({ success: true, path: rel, content: String(doc.content || '') });
+    } else {
+      const abs = safeDocAbsolutePath(rel);
+      const content = await fs.promises.readFile(abs, 'utf8');
+      return res.json({ success: true, path: rel, content });
+    }
   } catch (error) {
     if (error.code === 'ENOENT') {
       return res.status(404).json({ success: false, message: 'Fichier non trouvé' });
@@ -973,15 +1067,26 @@ app.get('/api/admin/docs/content', authenticateAdmin, ensureAdmin, async (req, r
 // Écrire (créer/mettre à jour) un fichier .md
 app.put('/api/admin/docs/content', authenticateAdmin, ensureAdmin, async (req, res) => {
   try {
-    const rel = String((req.body && req.body.path) || '').trim();
+    const rel = sanitizeDocRelPath((req.body && req.body.path) || '');
     const content = String((req.body && req.body.content) || '');
-    if (!rel) return res.status(400).json({ success: false, message: 'Paramètre path requis' });
-    const abs = safeDocAbsolutePath(rel);
-    // Créer le répertoire parent si nécessaire
-    await fs.promises.mkdir(path.dirname(abs), { recursive: true });
-    await fs.promises.writeFile(abs, content, 'utf8');
-    const st = await fs.promises.stat(abs);
-    res.json({ success: true, path: rel, size: st.size, mtime: st.mtimeMs });
+    const name = path.basename(rel);
+    if (DOCS_STORAGE === 'db') {
+      const size = Buffer.byteLength(content, 'utf8');
+      const now = new Date();
+      const updated = await Documentation.findOneAndUpdate(
+        { path: rel },
+        { $set: { path: rel, name, content, size, updatedAt: now } },
+        { new: true, upsert: true, setDefaultsOnInsert: true }
+      );
+      return res.json({ success: true, path: rel, size: updated.size || size, mtime: updated.updatedAt ? updated.updatedAt.getTime() : now.getTime() });
+    } else {
+      const abs = safeDocAbsolutePath(rel);
+      // Créer le répertoire parent si nécessaire
+      await fs.promises.mkdir(path.dirname(abs), { recursive: true });
+      await fs.promises.writeFile(abs, content, 'utf8');
+      const st = await fs.promises.stat(abs);
+      return res.json({ success: true, path: rel, size: st.size, mtime: st.mtimeMs });
+    }
   } catch (error) {
     console.error('Erreur écriture doc:', error);
     res.status(400).json({ success: false, message: error.message || 'Erreur' });
@@ -991,11 +1096,18 @@ app.put('/api/admin/docs/content', authenticateAdmin, ensureAdmin, async (req, r
 // Supprimer un fichier .md
 app.delete('/api/admin/docs/content', authenticateAdmin, ensureAdmin, async (req, res) => {
   try {
-    const rel = String(req.query.path || '').trim();
-    if (!rel) return res.status(400).json({ success: false, message: 'Paramètre path requis' });
-    const abs = safeDocAbsolutePath(rel);
-    await fs.promises.unlink(abs);
-    return res.json({ success: true, path: rel });
+    const rel = sanitizeDocRelPath(req.query.path || '');
+    if (DOCS_STORAGE === 'db') {
+      const result = await Documentation.deleteOne({ path: rel });
+      if (result.deletedCount === 0) {
+        return res.status(404).json({ success: false, message: 'Fichier non trouvé' });
+      }
+      return res.json({ success: true, path: rel });
+    } else {
+      const abs = safeDocAbsolutePath(rel);
+      await fs.promises.unlink(abs);
+      return res.json({ success: true, path: rel });
+    }
   } catch (error) {
     if (error.code === 'ENOENT') {
       return res.status(404).json({ success: false, message: 'Fichier non trouvé' });
@@ -1009,6 +1121,7 @@ app.delete('/api/admin/docs/content', authenticateAdmin, ensureAdmin, async (req
 app.get('/api/admin/tickets/:ticketId([0-9a-fA-F]{24})', authenticateAdmin, async (req, res) => {
   try {
     const ticket = await Ticket.findById(req.params.ticketId).populate('assignedTo', 'firstName lastName email role isActive');
+    // ... (rest of the code remains the same)
     
     if (!ticket) {
       return res.status(404).json({
