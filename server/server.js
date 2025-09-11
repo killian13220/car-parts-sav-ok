@@ -17,6 +17,7 @@ const User = require('./models/user');
 const ResponseTemplate = require('./models/responseTemplate');
 const Notification = require('./models/notification');
 const Documentation = require('./models/documentation');
+const Order = require('./models/order');
 const bcrypt = require('bcryptjs');
 const { sendStatusUpdateEmail, sendTicketCreationEmail, sendAssignmentEmail, sendAssistanceRequestEmail, sendEscalationEmail, sendSlaReminderEmail, sendPasswordResetEmail } = require('./services/emailService');
 const setupStatsRoutes = require('./stats-api');
@@ -28,6 +29,7 @@ const { isS3Enabled, uploadBuffer, streamToResponse } = require('./services/stor
 // Initialisation de l'application Express
 const app = express();
 const PORT = process.env.PORT || 3001;
+const WEBSITE_URL = (process.env.WEBSITE_URL && process.env.WEBSITE_URL.trim()) || `http://localhost:${PORT}`;
 // L'application est derrière un proxy (Railway/Render)
 app.set('trust proxy', 1);
 
@@ -75,7 +77,16 @@ app.use(helmet({
 // Compression des réponses
 app.use(compression());
 // Parsing
-app.use(express.json());
+app.use(express.json({
+  verify: (req, res, buf) => {
+    try {
+      // Conserver le body brut pour WooCommerce (signature HMAC)
+      if (req.originalUrl && req.originalUrl.startsWith('/api/webhooks/woocommerce')) {
+        req.rawBody = Buffer.from(buf);
+      }
+    } catch (_) {}
+  }
+}));
 app.use(express.urlencoded({ extended: true }));
 
 // Rate limiting sur les routes admin (anti-abus)
@@ -163,6 +174,28 @@ const diskStorage = multer.diskStorage({
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
     const ext = path.extname(file.originalname);
     cb(null, file.fieldname + '-' + uniqueSuffix + ext);
+  }
+});
+
+// Renseigner l'expédition et marquer comme expédiée
+app.post('/api/admin/orders/:id/ship', authenticateAdmin, ensureAdminOrAgent, async (req, res) => {
+  try {
+    const order = await Order.findById(req.params.id);
+    if (!order) return res.status(404).json({ success: false, message: 'Commande non trouvée' });
+    const { carrier, trackingNumber, address } = req.body || {};
+    order.shipping = order.shipping || {};
+    if (address && typeof address === 'object') order.shipping.address = address;
+    if (carrier) order.shipping.carrier = String(carrier);
+    if (trackingNumber) order.shipping.trackingNumber = String(trackingNumber);
+    order.shipping.shippedAt = new Date();
+    order.status = 'fulfilled';
+    order.events = order.events || [];
+    order.events.push({ type: 'order_shipped', message: 'Commande expédiée', payloadSnippet: { carrier: order.shipping.carrier, trackingNumber: order.shipping.trackingNumber } });
+    await order.save();
+    res.json({ success: true, order });
+  } catch (e) {
+    console.error('[orders:ship] erreur', e);
+    res.status(500).json({ success: false, message: 'Erreur serveur' });
   }
 });
 
@@ -1988,6 +2021,344 @@ app.post('/api/tickets/additional-info', upload.array('files', 10), async (req, 
   } catch (error) {
     console.error('Erreur lors de l\'ajout d\'informations complémentaires:', error);
     res.status(500).json({ success: false, message: 'Erreur serveur lors de l\'ajout d\'informations complémentaires' });
+  }
+});
+
+// ============================
+//  COMMANDE: Admin & Webhooks
+// ============================
+
+function toAmountString(n) {
+  const v = Number(n || 0);
+  return v.toFixed(2);
+}
+
+function mapWooStatusToInternal(s) {
+  const st = String(s || '').toLowerCase();
+  if (['processing', 'on-hold'].includes(st)) return 'paid';
+  if (st === 'completed') return 'fulfilled';
+  if (st === 'pending') return 'pending_payment';
+  if (st === 'cancelled') return 'cancelled';
+  if (st === 'refunded') return 'refunded';
+  if (st === 'failed') return 'failed';
+  return 'processing';
+}
+
+function mapMollieStatusToInternal(s) {
+  const st = String(s || '').toLowerCase();
+  if (st === 'paid') return 'paid';
+  if (['open','pending','authorized'].includes(st)) return 'pending_payment';
+  if (['failed','expired','canceled'].includes(st)) return 'failed';
+  if (['refunded','chargedback'].includes(st)) return 'refunded';
+  return 'processing';
+}
+
+function requireMollieApiKey() {
+  const key = process.env.MOLLIE_API_KEY && process.env.MOLLIE_API_KEY.trim();
+  if (!key) throw new Error('MOLLIE_API_KEY manquant');
+  return key;
+}
+
+async function mollieCreatePayment(params) {
+  const apiKey = requireMollieApiKey();
+  const resp = await fetch('https://api.mollie.com/v2/payments', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(params)
+  });
+  if (!resp.ok) {
+    const txt = await resp.text().catch(() => '');
+    throw new Error(`Mollie create payment HTTP ${resp.status}: ${txt}`);
+  }
+  return await resp.json();
+}
+
+async function mollieGetPayment(paymentId) {
+  const apiKey = requireMollieApiKey();
+  const resp = await fetch(`https://api.mollie.com/v2/payments/${encodeURIComponent(paymentId)}`, {
+    method: 'GET',
+    headers: { 'Authorization': `Bearer ${apiKey}` }
+  });
+  if (!resp.ok) {
+    const txt = await resp.text().catch(() => '');
+    throw new Error(`Mollie get payment HTTP ${resp.status}: ${txt}`);
+  }
+  return await resp.json();
+}
+
+// --- Endpoints Admin Commandes ---
+// Liste des commandes (tri dernière activité desc, filtres simples)
+app.get('/api/admin/orders', authenticateAdmin, ensureAdminOrAgent, async (req, res) => {
+  try {
+    const page = Math.max(1, parseInt(req.query.page || '1', 10));
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit || '25', 10)));
+    const skip = (page - 1) * limit;
+    const q = String(req.query.q || '').trim();
+    const status = String(req.query.status || '').trim();
+    const provider = String(req.query.provider || '').trim();
+
+    const filter = {};
+    if (status) filter.status = status;
+    if (provider) filter.provider = provider;
+    if (q) {
+      filter.$or = [
+        { number: new RegExp(q, 'i') },
+        { 'customer.email': new RegExp(q, 'i') },
+        { 'items.name': new RegExp(q, 'i') },
+        { 'items.sku': new RegExp(q, 'i') }
+      ];
+    }
+
+    const [ total, orders ] = await Promise.all([
+      Order.countDocuments(filter),
+      Order.find(filter).sort({ updatedAt: -1 }).skip(skip).limit(limit).lean()
+    ]);
+
+    res.json({ success: true, page, limit, total, orders });
+  } catch (e) {
+    console.error('[orders:list] erreur', e);
+    res.status(500).json({ success: false, message: 'Erreur serveur' });
+  }
+});
+
+// Détail d\'une commande
+app.get('/api/admin/orders/:id', authenticateAdmin, ensureAdminOrAgent, async (req, res) => {
+  try {
+    const order = await Order.findById(req.params.id).lean();
+    if (!order) return res.status(404).json({ success: false, message: 'Commande non trouvée' });
+    res.json({ success: true, order });
+  } catch (e) {
+    res.status(400).json({ success: false, message: 'Identifiant invalide' });
+  }
+});
+
+// Créer une commande (brouillon) pour générer ensuite un lien de paiement Mollie
+app.post('/api/admin/orders', authenticateAdmin, ensureAdminOrAgent, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const provider = body.provider && typeof body.provider === 'string' ? body.provider : 'mollie';
+    const number = body.number && String(body.number).trim() !== '' ? String(body.number).trim() : undefined;
+    const customer = body.customer && typeof body.customer === 'object' ? body.customer : {};
+    const totals = body.totals && typeof body.totals === 'object' ? body.totals : { currency: 'EUR', amount: 0 };
+    const items = Array.isArray(body.items) ? body.items : [];
+
+    const order = new Order({
+      provider,
+      number,
+      status: 'pending_payment',
+      customer: {
+        name: customer.name || '',
+        email: customer.email || '',
+        phone: customer.phone || ''
+      },
+      totals: {
+        currency: (totals.currency || 'EUR'),
+        amount: Number(totals.amount || 0),
+        shipping: Number(totals.shipping || 0),
+        tax: Number(totals.tax || 0)
+      },
+      items: items.map(it => ({
+        sku: it.sku || '',
+        name: it.name || '',
+        qty: Number(it.qty || 0),
+        unitPrice: Number(it.unitPrice || 0)
+      })),
+      events: [{ type: 'order_created_admin', message: 'Commande créée par admin' }]
+    });
+    await order.save();
+    res.json({ success: true, order });
+  } catch (e) {
+    console.error('[orders:create] erreur', e);
+    res.status(400).json({ success: false, message: e.message || 'Erreur' });
+  }
+});
+
+// Marquer payé (virement)
+app.post('/api/admin/orders/:id/mark-paid', authenticateAdmin, ensureAdminOrAgent, async (req, res) => {
+  try {
+    const order = await Order.findById(req.params.id);
+    if (!order) return res.status(404).json({ success: false, message: 'Commande non trouvée' });
+    order.status = 'paid';
+    order.payment = order.payment || {};
+    order.payment.method = order.payment.method || 'bank_transfer';
+    order.payment.paidAt = new Date();
+    order.events = order.events || [];
+    order.events.push({ type: 'mark_paid_bank_transfer', message: 'Marqué comme payé (virement) par admin' });
+    await order.save();
+    res.json({ success: true, order });
+  } catch (e) {
+    console.error('[orders:mark-paid] erreur', e);
+    res.status(500).json({ success: false, message: 'Erreur serveur' });
+  }
+});
+
+// Créer un lien de paiement Mollie pour une commande
+app.post('/api/admin/orders/:id/payment-link', authenticateAdmin, ensureAdminOrAgent, async (req, res) => {
+  try {
+    const order = await Order.findById(req.params.id);
+    if (!order) return res.status(404).json({ success: false, message: 'Commande non trouvée' });
+
+    // Créer un paiement Mollie via l'API HTTP
+    const currency = (order.totals && order.totals.currency) || 'EUR';
+    const amount = (order.totals && order.totals.amount) || 0;
+    const successUrl = process.env.PAYMENT_SUCCESS_URL || `${WEBSITE_URL}/paiement/succes`;
+    const cancelUrl = process.env.PAYMENT_CANCEL_URL || `${WEBSITE_URL}/paiement/annule`;
+    const webhookToken = process.env.MOLLIE_WEBHOOK_TOKEN || '';
+    const webhookUrl = `${WEBSITE_URL.replace(/\/$/, '')}/api/webhooks/mollie/${encodeURIComponent(webhookToken)}`;
+
+    const description = `Commande ${order.number || order._id.toString()}`;
+    const payment = await mollieCreatePayment({
+      amount: { currency, value: toAmountString(amount) },
+      description,
+      redirectUrl: successUrl,
+      cancelUrl: cancelUrl,
+      webhookUrl: webhookUrl,
+      metadata: {
+        orderId: order._id.toString(),
+        number: order.number || ''
+      }
+    });
+
+    order.payment = order.payment || {};
+    order.payment.method = `mollie:${payment.method || 'link'}`;
+    order.payment.molliePaymentId = payment.id;
+    order.payment.mollieMode = payment.mode;
+    order.payment.mollieStatus = payment.status;
+    order.status = mapMollieStatusToInternal(payment.status);
+    order.events = order.events || [];
+    order.events.push({ type: 'mollie_payment_created', message: 'Lien de paiement créé', payloadSnippet: { id: payment.id, status: payment.status } });
+    await order.save();
+
+    const checkoutUrl = payment?._links?.checkout?.href || null;
+    return res.json({ success: true, paymentId: payment.id, checkoutUrl });
+  } catch (e) {
+    console.error('[orders:payment-link] erreur', e);
+    res.status(500).json({ success: false, message: 'Erreur serveur' });
+  }
+});
+
+// --- Webhook Mollie ---
+// Mollie envoie un id de paiement ; nous récupérons l\'objet via l\'API et mettons à jour la commande
+app.post('/api/webhooks/mollie/:token', async (req, res) => {
+  try {
+    const token = String(req.params.token || '').trim();
+    const expected = String(process.env.MOLLIE_WEBHOOK_TOKEN || '').trim();
+    if (!expected || token !== expected) {
+      return res.status(401).json({ success: false, message: 'Token invalide' });
+    }
+    const paymentId = String((req.body && req.body.id) || '').trim();
+    if (!paymentId) {
+      return res.status(400).json({ success: false, message: 'id de paiement manquant' });
+    }
+
+    const payment = await mollieGetPayment(paymentId);
+
+    // Tenter de retrouver la commande par paymentId
+    let order = await Order.findOne({ 'payment.molliePaymentId': payment.id });
+    if (!order) {
+      // Créer une commande minimale si pas trouvée (ex: paiement créé hors flux interne)
+      const amountValue = parseFloat(payment.amount?.value || '0');
+      order = new Order({
+        provider: 'mollie',
+        status: mapMollieStatusToInternal(payment.status),
+        totals: { currency: payment.amount?.currency || 'EUR', amount: isNaN(amountValue) ? 0 : amountValue },
+        payment: {
+          method: `mollie:${payment.method || 'link'}`,
+          molliePaymentId: payment.id,
+          mollieMode: payment.mode,
+          mollieStatus: payment.status,
+          paidAt: payment.paidAt ? new Date(payment.paidAt) : undefined
+        },
+        customer: {
+          name: payment.consumerName || '',
+          email: (payment.billingEmail || payment.email) || ''
+        },
+        events: [{ type: 'mollie_webhook_create', message: 'Commande créée via webhook Mollie', payloadSnippet: { id: payment.id, status: payment.status } }]
+      });
+    } else {
+      order.payment = order.payment || {};
+      order.payment.method = `mollie:${payment.method || 'link'}`;
+      order.payment.molliePaymentId = payment.id;
+      order.payment.mollieMode = payment.mode;
+      order.payment.mollieStatus = payment.status;
+      if (payment.paidAt) order.payment.paidAt = new Date(payment.paidAt);
+      order.status = mapMollieStatusToInternal(payment.status);
+      order.events = order.events || [];
+      order.events.push({ type: 'mollie_webhook_update', message: 'Mise à jour via webhook Mollie', payloadSnippet: { id: payment.id, status: payment.status } });
+    }
+    await order.save();
+
+    return res.json({ success: true });
+  } catch (e) {
+    console.error('[webhook:mollie] erreur', e);
+    // Toujours 200 pour éviter les retries agressifs si l\'erreur est passagère
+    return res.json({ success: true });
+  }
+});
+
+// --- Webhook WooCommerce ---
+// Vérifie la signature HMAC SHA256 (X-WC-Webhook-Signature) sur le body brut
+app.post('/api/webhooks/woocommerce', async (req, res) => {
+  try {
+    const secret = String(process.env.WOOCOMMERCE_WEBHOOK_SECRET || '').trim();
+    const sig = req.header('x-wc-webhook-signature') || req.header('X-WC-Webhook-Signature');
+    if (!secret || !sig) {
+      return res.status(401).json({ success: false, message: 'Signature manquante' });
+    }
+    const bodyRaw = req.rawBody; // Buffer fixé par express.json verify
+    if (!bodyRaw || !Buffer.isBuffer(bodyRaw)) {
+      return res.status(400).json({ success: false, message: 'Corps brut introuvable pour vérification' });
+    }
+    const computed = crypto.createHmac('sha256', secret).update(bodyRaw).digest('base64');
+    if (computed !== sig) {
+      return res.status(401).json({ success: false, message: 'Signature invalide' });
+    }
+    const payload = JSON.parse(bodyRaw.toString('utf8'));
+    const wooId = String(payload.id || payload.resource_id || '').trim();
+    if (!wooId) {
+      return res.status(400).json({ success: false, message: 'Identifiant commande manquant' });
+    }
+
+    const internalStatus = mapWooStatusToInternal(payload.status);
+    const amount = parseFloat((payload.total || payload.total_due || '0').toString());
+    const currency = (payload.currency || 'EUR').toString();
+    const customer = payload.billing ? {
+      name: `${payload.billing.first_name || ''} ${payload.billing.last_name || ''}`.trim(),
+      email: payload.billing.email || '',
+      phone: payload.billing.phone || ''
+    } : { name: '', email: '', phone: '' };
+    const items = Array.isArray(payload.line_items) ? payload.line_items.map(li => ({
+      sku: li.sku || '',
+      name: li.name || '',
+      qty: li.quantity || 0,
+      unitPrice: parseFloat((li.price || li.total || 0).toString())
+    })) : [];
+
+    const update = {
+      provider: 'woocommerce',
+      providerOrderId: wooId,
+      number: payload.number ? String(payload.number) : undefined,
+      status: internalStatus,
+      customer,
+      totals: { currency, amount: isNaN(amount) ? 0 : amount },
+      items,
+      events: [{ type: 'woo_webhook', message: `Événement Woo status=${payload.status}`, payloadSnippet: { id: wooId, status: payload.status } }]
+    };
+
+    await Order.updateOne(
+      { provider: 'woocommerce', providerOrderId: wooId },
+      { $set: update },
+      { upsert: true }
+    );
+
+    return res.json({ success: true });
+  } catch (e) {
+    console.error('[webhook:woocommerce] erreur', e);
+    // 200 pour éviter les retries démesurés, mais logger l\'erreur
+    return res.json({ success: true });
   }
 });
 
