@@ -19,6 +19,11 @@ const Notification = require('./models/notification');
 const Documentation = require('./models/documentation');
 const Order = require('./models/order');
 const bcrypt = require('bcryptjs');
+// Assurer la disponibilité de fetch côté serveur (Node < 18)
+let fetch = global.fetch;
+if (!fetch) {
+  try { fetch = require('undici').fetch; } catch (_) {}
+}
 const { sendStatusUpdateEmail, sendTicketCreationEmail, sendAssignmentEmail, sendAssistanceRequestEmail, sendEscalationEmail, sendSlaReminderEmail, sendPasswordResetEmail } = require('./services/emailService');
 const setupStatsRoutes = require('./stats-api');
 const { authenticateAdmin: adminAuthMW } = require('./middleware/auth');
@@ -120,6 +125,76 @@ try {
   fs.mkdirSync(uploadsDir, { recursive: true });
 } catch (e) {
   console.error('Impossible de créer le répertoire uploads:', e);
+}
+
+// Synchroniser toutes les commandes WooCommerce (pagination complète)
+async function syncWooAllOrders() {
+  try {
+    const base = (process.env.WOOCOMMERCE_BASE_URL || '').trim();
+    const ck = (process.env.WOOCOMMERCE_CONSUMER_KEY || '').trim();
+    const cs = (process.env.WOOCOMMERCE_CONSUMER_SECRET || '').trim();
+    if (!base || !ck || !cs) throw new Error('Variables WooCommerce manquantes');
+    let page = 1;
+    const perPage = 100; // maximum recommandé par Woo
+    let processed = 0;
+    for (;;) {
+      const baseUrl = `${base.replace(/\/$/, '')}/wp-json/wc/v3/orders?per_page=${perPage}&page=${page}&orderby=date&order=desc`;
+      let resp = await fetch(baseUrl, { headers: { 'Authorization': `Basic ${base64(`${ck}:${cs}`)}` } });
+      if (resp.status === 401 || resp.status === 403) {
+        const alt = `${base.replace(/\/$/, '')}/wp-json/wc/v3/orders?consumer_key=${encodeURIComponent(ck)}&consumer_secret=${encodeURIComponent(cs)}&per_page=${perPage}&page=${page}&orderby=date&order=desc`;
+        resp = await fetch(alt);
+      }
+      if (!resp.ok) {
+        const txt = await resp.text().catch(() => '');
+        console.warn('[orders-sync-full] Woo HTTP', resp.status, txt);
+        break;
+      }
+      const list = await resp.json().catch(() => []);
+      if (!Array.isArray(list) || list.length === 0) break;
+      for (const payload of list) {
+        const wooId = String(payload.id || payload.resource_id || '').trim();
+        if (!wooId) continue;
+        const internalStatus = mapWooStatusToInternal(payload.status);
+        const amount = parseFloat((payload.total || payload.total_due || '0').toString());
+        const currency = (payload.currency || 'EUR').toString();
+        const customer = payload.billing ? {
+          name: `${payload.billing.first_name || ''} ${payload.billing.last_name || ''}`.trim(),
+          email: payload.billing.email || '',
+          phone: payload.billing.phone || ''
+        } : { name: '', email: '', phone: '' };
+        const items = Array.isArray(payload.line_items) ? payload.line_items.map(li => ({
+          sku: li.sku || '',
+          name: li.name || '',
+          qty: li.quantity || 0,
+          unitPrice: parseFloat((li.price || li.total || 0).toString())
+        })) : [];
+        const update = {
+          provider: 'woocommerce',
+          providerOrderId: wooId,
+          number: payload.number ? String(payload.number) : undefined,
+          status: internalStatus,
+          customer,
+          totals: { currency, amount: isNaN(amount) ? 0 : amount },
+          items,
+          events: [{ type: 'woo_sync_full', message: `Full sync Woo status=${payload.status}`, payloadSnippet: { id: wooId, status: payload.status } }]
+        };
+        await Order.updateOne(
+          { provider: 'woocommerce', providerOrderId: wooId },
+          { $set: update },
+          { upsert: true }
+        );
+      }
+      processed += list.length;
+      console.log(`[orders-sync-full] Page ${page} -> ${list.length} commande(s)`);
+      page += 1;
+      await new Promise(r => setTimeout(r, 300)); // petite pause pour éviter le rate-limit
+    }
+    console.log(`[orders-sync-full] Terminé. Total importé/actualisé: ${processed}`);
+    return { processed };
+  } catch (e) {
+    console.error('[orders-sync-full] Erreur', e && e.message ? e.message : e);
+    throw e;
+  }
 }
 
 // Préparer une liste d'emplacements possibles pour servir les fichiers (compatibilité)
@@ -317,27 +392,27 @@ if (ORDERS_SYNC_ENABLED) {
   console.log(`[orders-sync] Activé (intervalle: ${ORDERS_SYNC_INTERVAL_MINUTES} min)`);
 }
 
-// Renseigner l'expédition et marquer comme expédiée
-app.post('/api/admin/orders/:id/ship', authenticateAdmin, ensureAdminOrAgent, async (req, res) => {
-  try {
-    const order = await Order.findById(req.params.id);
-    if (!order) return res.status(404).json({ success: false, message: 'Commande non trouvée' });
-    const { carrier, trackingNumber, address } = req.body || {};
-    order.shipping = order.shipping || {};
-    if (address && typeof address === 'object') order.shipping.address = address;
-    if (carrier) order.shipping.carrier = String(carrier);
-    if (trackingNumber) order.shipping.trackingNumber = String(trackingNumber);
-    order.shipping.shippedAt = new Date();
-    order.status = 'fulfilled';
-    order.events = order.events || [];
-    order.events.push({ type: 'order_shipped', message: 'Commande expédiée', payloadSnippet: { carrier: order.shipping.carrier, trackingNumber: order.shipping.trackingNumber } });
-    await order.save();
-    res.json({ success: true, order });
-  } catch (e) {
-    console.error('[orders:ship] erreur', e);
-    res.status(500).json({ success: false, message: 'Erreur serveur' });
-  }
-});
+// Renseigner l'expédition et marquer comme expédiée (déplacée plus bas après authenticateAdmin)
+// app.post('/api/admin/orders/:id/ship', authenticateAdmin, ensureAdminOrAgent, async (req, res) => {
+//   try {
+//     const order = await Order.findById(req.params.id);
+//     if (!order) return res.status(404).json({ success: false, message: 'Commande non trouvée' });
+//     const { carrier, trackingNumber, address } = req.body || {};
+//     order.shipping = order.shipping || {};
+//     if (address && typeof address === 'object') order.shipping.address = address;
+//     if (carrier) order.shipping.carrier = String(carrier);
+//     if (trackingNumber) order.shipping.trackingNumber = String(trackingNumber);
+//     order.shipping.shippedAt = new Date();
+//     order.status = 'fulfilled';
+//     order.events = order.events || [];
+//     order.events.push({ type: 'order_shipped', message: 'Commande expédiée', payloadSnippet: { carrier: order.shipping.carrier, trackingNumber: order.shipping.trackingNumber } });
+//     await order.save();
+//     res.json({ success: true, order });
+//   } catch (e) {
+//     console.error('[orders:ship] erreur', e);
+//     res.status(500).json({ success: false, message: 'Erreur serveur' });
+//   }
+// });
 
 // Limite de taille de fichier configurable (par défaut 25MB)
 const MAX_FILE_SIZE_MB = parseInt(process.env.UPLOAD_MAX_FILE_SIZE_MB || '25', 10);
@@ -2376,6 +2451,50 @@ app.post('/api/admin/orders/:id/payment-link', authenticateAdmin, ensureAdminOrA
     return res.json({ success: true, paymentId: payment.id, checkoutUrl });
   } catch (e) {
     console.error('[orders:payment-link] erreur', e);
+    res.status(500).json({ success: false, message: 'Erreur serveur' });
+  }
+});
+
+// Synchronisation manuelle immédiate (WooCommerce + Mollie)
+app.post('/api/admin/orders/sync-now', authenticateAdmin, ensureAdminOrAgent, async (req, res) => {
+  try {
+    await runOrdersSync();
+    res.json({ success: true });
+  } catch (e) {
+    console.error('[orders:sync-now] erreur', e);
+    res.status(500).json({ success: false, message: 'Erreur lors de la synchronisation' });
+  }
+});
+
+// Synchronisation complète de WooCommerce (toutes les commandes)
+app.post('/api/admin/orders/sync-woo-all', authenticateAdmin, ensureAdminOrAgent, async (req, res) => {
+  try {
+    const out = await syncWooAllOrders();
+    res.json({ success: true, ...out });
+  } catch (e) {
+    console.error('[orders:sync-woo-all] erreur', e);
+    res.status(500).json({ success: false, message: e.message || 'Erreur lors de la synchro complète Woo' });
+  }
+});
+
+// Renseigner l'expédition et marquer comme expédiée
+app.post('/api/admin/orders/:id/ship', authenticateAdmin, ensureAdminOrAgent, async (req, res) => {
+  try {
+    const order = await Order.findById(req.params.id);
+    if (!order) return res.status(404).json({ success: false, message: 'Commande non trouvée' });
+    const { carrier, trackingNumber, address } = req.body || {};
+    order.shipping = order.shipping || {};
+    if (address && typeof address === 'object') order.shipping.address = address;
+    if (carrier) order.shipping.carrier = String(carrier);
+    if (trackingNumber) order.shipping.trackingNumber = String(trackingNumber);
+    order.shipping.shippedAt = new Date();
+    order.status = 'fulfilled';
+    order.events = order.events || [];
+    order.events.push({ type: 'order_shipped', message: 'Commande expédiée', payloadSnippet: { carrier: order.shipping.carrier, trackingNumber: order.shipping.trackingNumber } });
+    await order.save();
+    res.json({ success: true, order });
+  } catch (e) {
+    console.error('[orders:ship] erreur', e);
     res.status(500).json({ success: false, message: 'Erreur serveur' });
   }
 });

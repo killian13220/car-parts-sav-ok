@@ -2235,6 +2235,8 @@ async function checkAuth() {
         ordersUIInitialized = true;
         const createBtn = document.getElementById('orders-create-btn');
         const refreshBtn = document.getElementById('orders-refresh-btn');
+        const syncBtn = document.getElementById('orders-sync-btn');
+        const syncWooAllBtn = document.getElementById('orders-sync-woo-all-btn');
         const searchInput = document.getElementById('orders-search-input');
         const providerSel = document.getElementById('orders-provider-filter');
         const statusSel = document.getElementById('orders-status-filter');
@@ -2270,9 +2272,51 @@ async function checkAuth() {
             }
         });
         if (refreshBtn) refreshBtn.addEventListener('click', () => loadOrdersList(1));
+        if (syncBtn) syncBtn.addEventListener('click', async () => {
+            if (!authToken) return logout();
+            try {
+                syncBtn.disabled = true;
+                syncBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Synchronisation...';
+                const r = await fetch('/api/admin/orders/sync-now', {
+                    method: 'POST',
+                    headers: { 'Authorization': `Basic ${authToken}` }
+                });
+                const d = await r.json().catch(() => ({}));
+                if (!r.ok || !d.success) throw new Error(d.message || 'Échec de la synchronisation');
+                await loadOrdersList(1);
+                showToast('Synchronisation terminée', 'success');
+            } catch (e) {
+                showToast(e.message || 'Erreur de synchronisation', 'error');
+            } finally {
+                syncBtn.disabled = false;
+                syncBtn.innerHTML = '<i class="fas fa-cloud-download-alt"></i> Synchroniser (Woo+Mollie)';
+            }
+        });
         if (searchInput) searchInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') loadOrdersList(1); });
         if (providerSel) providerSel.addEventListener('change', () => loadOrdersList(1));
         if (statusSel) statusSel.addEventListener('change', () => loadOrdersList(1));
+        if (syncWooAllBtn) syncWooAllBtn.addEventListener('click', async () => {
+            if (!authToken) return logout();
+            const ok = confirm('Importer toutes les commandes WooCommerce ? Cela peut prendre plusieurs minutes.');
+            if (!ok) return;
+            try {
+                syncWooAllBtn.disabled = true;
+                syncWooAllBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Import en cours...';
+                const r = await fetch('/api/admin/orders/sync-woo-all', {
+                    method: 'POST',
+                    headers: { 'Authorization': `Basic ${authToken}` }
+                });
+                const d = await r.json().catch(() => ({}));
+                if (!r.ok || !d.success) throw new Error(d.message || 'Échec de la synchro complète');
+                await loadOrdersList(1);
+                showToast(`Import terminé (${d.processed || 0} commandes)`, 'success');
+            } catch (e) {
+                showToast(e.message || 'Erreur de synchro complète', 'error');
+            } finally {
+                syncWooAllBtn.disabled = false;
+                syncWooAllBtn.innerHTML = '<i class="fas fa-database"></i> Importer toutes les commandes Woo';
+            }
+        });
         if (tbody) tbody.addEventListener('click', async (e) => {
             const btn = e.target.closest('button[data-action]');
             if (!btn) return;

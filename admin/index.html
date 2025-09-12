@@ -333,6 +333,69 @@
                 </div>
                 </div> <!-- Fin dashboard-layout -->
                 </div> <!-- Fin admin-dashboard -->
+
+                <!-- Section Commandes (top-level, séparée) -->
+                <div class="admin-orders" id="admin-orders" style="display: none;">
+                    <div class="settings-container">
+                        <div class="breadcrumb">
+                            <ul>
+                                <li><a href="#"><i class="fas fa-home"></i> Dashboard</a></li>
+                                <li class="active"><i class="fas fa-shopping-cart"></i> Commandes</li>
+                            </ul>
+                        </div>
+                        <h2><i class="fas fa-shopping-cart"></i> Commandes</h2>
+
+                        <div class="settings-actions" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                            <button id="orders-create-btn" class="btn-primary"><i class="fas fa-plus"></i> Créer une commande (brouillon)</button>
+                            <button id="orders-refresh-btn" class="btn-secondary"><i class="fas fa-rotate"></i> Rafraîchir</button>
+                            <button id="orders-sync-btn" class="btn-secondary"><i class="fas fa-cloud-download-alt"></i> Synchroniser (Woo+Mollie)</button>
+                            <button id="orders-sync-woo-all-btn" class="btn-secondary"><i class="fas fa-database"></i> Importer toutes les commandes Woo</button>
+                            <div style="flex:1; min-width:220px; display:flex; gap:8px; justify-content:flex-end;">
+                                <input type="text" id="orders-search-input" placeholder="Recherche (numéro, email, SKU)" style="flex:1; min-width:220px;">
+                                <select id="orders-provider-filter">
+                                    <option value="">Toutes sources</option>
+                                    <option value="woocommerce">WooCommerce</option>
+                                    <option value="mollie">Mollie</option>
+                                    <option value="bank_transfer">Virement</option>
+                                    <option value="manual">Manuelle</option>
+                                </select>
+                                <select id="orders-status-filter">
+                                    <option value="">Tous statuts</option>
+                                    <option value="pending_payment">En attente paiement</option>
+                                    <option value="awaiting_transfer">En attente virement</option>
+                                    <option value="paid">Payée</option>
+                                    <option value="processing">En préparation</option>
+                                    <option value="fulfilled">Expédiée</option>
+                                    <option value="cancelled">Annulée</option>
+                                    <option value="failed">Échouée</option>
+                                    <option value="refunded">Remboursée</option>
+                                    <option value="disputed">Litige</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div class="users-list-card" style="margin-top:12px;">
+                            <table class="tickets-table">
+                                <thead>
+                                    <tr>
+                                        <th>N°</th>
+                                        <th>Date</th>
+                                        <th>Client</th>
+                                        <th>Source</th>
+                                        <th>Statut</th>
+                                        <th>Montant</th>
+                                        <th>Activité</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="orders-list">
+                                    <!-- Lignes commandes injectées ici -->
+                                </tbody>
+                            </table>
+                            <div class="pagination" id="orders-pagination" style="margin-top:10px;"></div>
+                        </div>
+                    </div>
+                </div>
                 
                 <!-- Section Paramètres - Gestion des utilisateurs SAV -->
                 <div class="admin-settings" id="admin-settings">
@@ -421,66 +484,7 @@
                         </div>
                         </div>
 
-                <!-- Section Commandes -->
-                <div class="admin-orders" id="admin-orders" style="display: none;">
-                    <div class="settings-container">
-                        <div class="breadcrumb">
-                            <ul>
-                                <li><a href="#"><i class="fas fa-home"></i> Dashboard</a></li>
-                                <li class="active"><i class="fas fa-shopping-cart"></i> Commandes</li>
-                            </ul>
-                        </div>
-                        <h2><i class="fas fa-shopping-cart"></i> Commandes</h2>
-
-                        <div class="settings-actions" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-                            <button id="orders-create-btn" class="btn-primary"><i class="fas fa-plus"></i> Créer une commande (brouillon)</button>
-                            <button id="orders-refresh-btn" class="btn-secondary"><i class="fas fa-rotate"></i> Rafraîchir</button>
-                            <div style="flex:1; min-width:220px; display:flex; gap:8px; justify-content:flex-end;">
-                                <input type="text" id="orders-search-input" placeholder="Recherche (numéro, email, SKU)" style="flex:1; min-width:220px;">
-                                <select id="orders-provider-filter">
-                                    <option value="">Toutes sources</option>
-                                    <option value="woocommerce">WooCommerce</option>
-                                    <option value="mollie">Mollie</option>
-                                    <option value="bank_transfer">Virement</option>
-                                    <option value="manual">Manuelle</option>
-                                </select>
-                                <select id="orders-status-filter">
-                                    <option value="">Tous statuts</option>
-                                    <option value="pending_payment">En attente paiement</option>
-                                    <option value="awaiting_transfer">En attente virement</option>
-                                    <option value="paid">Payée</option>
-                                    <option value="processing">En préparation</option>
-                                    <option value="fulfilled">Expédiée</option>
-                                    <option value="cancelled">Annulée</option>
-                                    <option value="failed">Échouée</option>
-                                    <option value="refunded">Remboursée</option>
-                                    <option value="disputed">Litige</option>
-                                </select>
-                            </div>
-                        </div>
-
-                        <div class="users-list-card" style="margin-top:12px;">
-                            <table class="tickets-table">
-                                <thead>
-                                    <tr>
-                                        <th>N°</th>
-                                        <th>Date</th>
-                                        <th>Client</th>
-                                        <th>Source</th>
-                                        <th>Statut</th>
-                                        <th>Montant</th>
-                                        <th>Activité</th>
-                                        <th>Actions</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="orders-list">
-                                    <!-- Lignes commandes injectées ici -->
-                                </tbody>
-                            </table>
-                            <div class="pagination" id="orders-pagination" style="margin-top:10px;"></div>
-                        </div>
-                    </div>
-                </div>
+                
 
                         <!-- Gestion des modèles de réponse -->
                         <h2><i class="fas fa-reply"></i> Modèles de réponse</h2>
