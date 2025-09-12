@@ -30,6 +30,8 @@ const { isS3Enabled, uploadBuffer, streamToResponse } = require('./services/stor
 const app = express();
 const PORT = process.env.PORT || 3001;
 const WEBSITE_URL = (process.env.WEBSITE_URL && process.env.WEBSITE_URL.trim()) || `http://localhost:${PORT}`;
+const ORDERS_SYNC_ENABLED = String(process.env.ORDERS_SYNC_ENABLED || 'false').toLowerCase() === 'true';
+const ORDERS_SYNC_INTERVAL_MINUTES = parseInt(process.env.ORDERS_SYNC_INTERVAL_MINUTES || '15', 10);
 // L'application est derrière un proxy (Railway/Render)
 app.set('trust proxy', 1);
 
@@ -176,6 +178,144 @@ const diskStorage = multer.diskStorage({
     cb(null, file.fieldname + '-' + uniqueSuffix + ext);
   }
 });
+
+// --- Job de secours: resynchronisation périodique des commandes (Woo & Mollie) ---
+function base64(str) { return Buffer.from(str, 'utf8').toString('base64'); }
+
+async function syncWooRecentOrders() {
+  try {
+    const base = (process.env.WOOCOMMERCE_BASE_URL || '').trim();
+    const ck = (process.env.WOOCOMMERCE_CONSUMER_KEY || '').trim();
+    const cs = (process.env.WOOCOMMERCE_CONSUMER_SECRET || '').trim();
+    if (!base || !ck || !cs) return;
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const url = `${base.replace(/\/$/, '')}/wp-json/wc/v3/orders?after=${encodeURIComponent(since)}&per_page=20&orderby=date&order=desc`;
+    let resp = await fetch(url, {
+      headers: { 'Authorization': `Basic ${base64(`${ck}:${cs}`)}` }
+    });
+    if (resp.status === 401 || resp.status === 403) {
+      // Fallback: certaines configs Woo exigent les clés en query
+      const url2 = `${base.replace(/\/$/, '')}/wp-json/wc/v3/orders?consumer_key=${encodeURIComponent(ck)}&consumer_secret=${encodeURIComponent(cs)}&after=${encodeURIComponent(since)}&per_page=20&orderby=date&order=desc`;
+      resp = await fetch(url2);
+    }
+    if (!resp.ok) {
+      const txt = await resp.text().catch(() => '');
+      console.warn('[orders-sync] Woo HTTP', resp.status, txt);
+      return;
+    }
+    const list = await resp.json().catch(() => []);
+    if (!Array.isArray(list) || list.length === 0) return;
+    for (const payload of list) {
+      const wooId = String(payload.id || payload.resource_id || '').trim();
+      if (!wooId) continue;
+      const internalStatus = mapWooStatusToInternal(payload.status);
+      const amount = parseFloat((payload.total || payload.total_due || '0').toString());
+      const currency = (payload.currency || 'EUR').toString();
+      const customer = payload.billing ? {
+        name: `${payload.billing.first_name || ''} ${payload.billing.last_name || ''}`.trim(),
+        email: payload.billing.email || '',
+        phone: payload.billing.phone || ''
+      } : { name: '', email: '', phone: '' };
+      const items = Array.isArray(payload.line_items) ? payload.line_items.map(li => ({
+        sku: li.sku || '',
+        name: li.name || '',
+        qty: li.quantity || 0,
+        unitPrice: parseFloat((li.price || li.total || 0).toString())
+      })) : [];
+      const update = {
+        provider: 'woocommerce',
+        providerOrderId: wooId,
+        number: payload.number ? String(payload.number) : undefined,
+        status: internalStatus,
+        customer,
+        totals: { currency, amount: isNaN(amount) ? 0 : amount },
+        items,
+        events: [{ type: 'woo_sync', message: `Sync Woo status=${payload.status}`, payloadSnippet: { id: wooId, status: payload.status } }]
+      };
+      await Order.updateOne(
+        { provider: 'woocommerce', providerOrderId: wooId },
+        { $set: update },
+        { upsert: true }
+      );
+    }
+    console.log(`[orders-sync] Woo: ${list.length} commande(s) synchronisées`);
+  } catch (e) {
+    console.error('[orders-sync] Woo erreur', e && e.message ? e.message : e);
+  }
+}
+
+async function syncMollieRecentPayments() {
+  try {
+    const key = (process.env.MOLLIE_API_KEY || '').trim();
+    if (!key) return;
+    const resp = await fetch('https://api.mollie.com/v2/payments?limit=50', {
+      headers: { 'Authorization': `Bearer ${key}` }
+    });
+    if (!resp.ok) {
+      const txt = await resp.text().catch(() => '');
+      console.warn('[orders-sync] Mollie HTTP', resp.status, txt);
+      return;
+    }
+    const data = await resp.json().catch(() => ({}));
+    const list = Array.isArray(data._embedded?.payments) ? data._embedded.payments : [];
+    if (list.length === 0) return;
+    for (const p of list) {
+      if (!p || !p.id) continue;
+      let order = await Order.findOne({ 'payment.molliePaymentId': p.id });
+      const amountValue = parseFloat(p.amount?.value || '0');
+      if (!order) {
+        order = new Order({
+          provider: 'mollie',
+          status: mapMollieStatusToInternal(p.status),
+          totals: { currency: p.amount?.currency || 'EUR', amount: isNaN(amountValue) ? 0 : amountValue },
+          payment: {
+            method: `mollie:${p.method || 'link'}`,
+            molliePaymentId: p.id,
+            mollieMode: p.mode,
+            mollieStatus: p.status,
+            paidAt: p.paidAt ? new Date(p.paidAt) : undefined
+          },
+          customer: {
+            name: p.consumerName || '',
+            email: (p.billingEmail || p.email) || ''
+          },
+          events: [{ type: 'mollie_sync_create', message: 'Commande créée par sync Mollie', payloadSnippet: { id: p.id, status: p.status } }]
+        });
+        await order.save();
+      } else {
+        order.payment = order.payment || {};
+        order.payment.method = `mollie:${p.method || 'link'}`;
+        order.payment.molliePaymentId = p.id;
+        order.payment.mollieMode = p.mode;
+        order.payment.mollieStatus = p.status;
+        if (p.paidAt) order.payment.paidAt = new Date(p.paidAt);
+        order.status = mapMollieStatusToInternal(p.status);
+        order.events = order.events || [];
+        order.events.push({ type: 'mollie_sync_update', message: 'Mise à jour par sync Mollie', payloadSnippet: { id: p.id, status: p.status } });
+        await order.save();
+      }
+    }
+    console.log(`[orders-sync] Mollie: ${list.length} paiement(s) synchronisés`);
+  } catch (e) {
+    console.error('[orders-sync] Mollie erreur', e && e.message ? e.message : e);
+  }
+}
+
+async function runOrdersSync() {
+  await Promise.allSettled([
+    syncWooRecentOrders(),
+    syncMollieRecentPayments()
+  ]);
+}
+
+if (ORDERS_SYNC_ENABLED) {
+  // Lancer au démarrage (après connexion DB) et ensuite périodiquement
+  mongoose.connection.once('open', () => {
+    setTimeout(() => { try { runOrdersSync(); } catch(_) {} }, 2000);
+  });
+  setInterval(() => { try { runOrdersSync(); } catch(_) {} }, Math.max(1, ORDERS_SYNC_INTERVAL_MINUTES) * 60 * 1000);
+  console.log(`[orders-sync] Activé (intervalle: ${ORDERS_SYNC_INTERVAL_MINUTES} min)`);
+}
 
 // Renseigner l'expédition et marquer comme expédiée
 app.post('/api/admin/orders/:id/ship', authenticateAdmin, ensureAdminOrAgent, async (req, res) => {

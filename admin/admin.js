@@ -2202,6 +2202,246 @@ async function checkAuth() {
         }
     }
     
+    // Afficher la section Commandes
+    function showOrders() {
+        const dashboard = document.getElementById('admin-dashboard');
+        const settings = document.getElementById('admin-settings');
+        const details = document.getElementById('ticket-details');
+        const docs = document.getElementById('admin-docs');
+        const orders = document.getElementById('admin-orders');
+        if (dashboard) dashboard.style.display = 'none';
+        if (settings) settings.style.display = 'none';
+        if (details) details.style.display = 'none';
+        if (docs) docs.style.display = 'none';
+        if (orders) orders.style.display = 'block';
+        setActiveNav('orders');
+        try { initOrdersUIOnce(); } catch(_) {}
+        try { loadOrdersList(1); } catch(_) {}
+    }
+
+    function formatMoney(amount, currency) {
+        const value = isNaN(Number(amount)) ? 0 : Number(amount);
+        const cur = (currency || 'EUR').toString();
+        try {
+            return new Intl.NumberFormat('fr-FR', { style: 'currency', currency: cur }).format(value);
+        } catch(_) {
+            return `${value.toFixed(2)} ${cur}`;
+        }
+    }
+
+    let ordersUIInitialized = false;
+    function initOrdersUIOnce() {
+        if (ordersUIInitialized) return;
+        ordersUIInitialized = true;
+        const createBtn = document.getElementById('orders-create-btn');
+        const refreshBtn = document.getElementById('orders-refresh-btn');
+        const searchInput = document.getElementById('orders-search-input');
+        const providerSel = document.getElementById('orders-provider-filter');
+        const statusSel = document.getElementById('orders-status-filter');
+        const tbody = document.getElementById('orders-list');
+        
+        if (createBtn) createBtn.addEventListener('click', async () => {
+            if (!authToken) return logout();
+            try {
+                const number = prompt('Numéro de commande (facultatif):', '');
+                const email = prompt('Email client:', '');
+                if (!email) return;
+                const name = prompt('Nom client (optionnel):', '');
+                const amountStr = prompt('Montant (ex: 49.90):', '49.90');
+                const amount = parseFloat(amountStr || '0');
+                const payload = {
+                    provider: 'mollie',
+                    number: number || undefined,
+                    customer: { name: name || '', email },
+                    totals: { currency: 'EUR', amount },
+                    items: []
+                };
+                const res = await fetch('/api/admin/orders', {
+                    method: 'POST',
+                    headers: { 'Authorization': `Basic ${authToken}`, 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok || !data.success) throw new Error(data.message || 'Création impossible');
+                showToast('Commande créée', 'success');
+                await loadOrdersList(1);
+            } catch (e) {
+                showToast(e.message || 'Erreur lors de la création', 'error');
+            }
+        });
+        if (refreshBtn) refreshBtn.addEventListener('click', () => loadOrdersList(1));
+        if (searchInput) searchInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') loadOrdersList(1); });
+        if (providerSel) providerSel.addEventListener('change', () => loadOrdersList(1));
+        if (statusSel) statusSel.addEventListener('change', () => loadOrdersList(1));
+        if (tbody) tbody.addEventListener('click', async (e) => {
+            const btn = e.target.closest('button[data-action]');
+            if (!btn) return;
+            const id = btn.dataset.id;
+            const action = btn.dataset.action;
+            if (!id || !action) return;
+            try {
+                if (action === 'payment-link') {
+                    const r = await fetch(`/api/admin/orders/${encodeURIComponent(id)}/payment-link`, {
+                        method: 'POST',
+                        headers: { 'Authorization': `Basic ${authToken}` }
+                    });
+                    const d = await r.json().catch(() => ({}));
+                    if (!r.ok || !d.success) throw new Error(d.message || 'Erreur création lien');
+                    if (d.checkoutUrl) window.open(d.checkoutUrl, '_blank', 'noopener');
+                    showToast('Lien de paiement créé', 'success');
+                    // Aide au test local: proposer de simuler le webhook Mollie après paiement
+                    try {
+                        const host = window.location.hostname;
+                        const isLocal = host === 'localhost' || host === '127.0.0.1';
+                        if (isLocal && d.paymentId) {
+                            const ok = confirm('Après avoir finalisé le paiement dans l\'onglet ouvert, cliquez sur OK pour SIMULER le webhook Mollie en local.');
+                            if (ok) {
+                                const respW = await fetch('/api/webhooks/mollie/local-test-123', {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ id: d.paymentId })
+                                });
+                                await respW.json().catch(() => ({}));
+                                await loadOrdersList(1);
+                                showToast('Webhook simulé (local). Statut mis à jour.', 'success');
+                            }
+                        }
+                    } catch(_) {}
+                } else if (action === 'mark-paid') {
+                    const r = await fetch(`/api/admin/orders/${encodeURIComponent(id)}/mark-paid`, {
+                        method: 'POST',
+                        headers: { 'Authorization': `Basic ${authToken}` }
+                    });
+                    const d = await r.json().catch(() => ({}));
+                    if (!r.ok || !d.success) throw new Error(d.message || 'Échec marquage payé');
+                    showToast('Commande marquée payée', 'success');
+                    await loadOrdersList(1);
+                } else if (action === 'ship') {
+                    const carrier = prompt('Transporteur:', '');
+                    const trackingNumber = prompt('N° de suivi:', '');
+                    const r = await fetch(`/api/admin/orders/${encodeURIComponent(id)}/ship`, {
+                        method: 'POST',
+                        headers: { 'Authorization': `Basic ${authToken}`, 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ carrier, trackingNumber })
+                    });
+                    const d = await r.json().catch(() => ({}));
+                    if (!r.ok || !d.success) throw new Error(d.message || 'Échec expédition');
+                    showToast('Commande expédiée', 'success');
+                    await loadOrdersList(1);
+                }
+            } catch (e2) {
+                showToast(e2.message || 'Erreur action', 'error');
+            }
+        });
+    }
+
+    async function loadOrdersList(page = 1) {
+        try {
+            if (!authToken) return logout();
+            const tbody = document.getElementById('orders-list');
+            const pag = document.getElementById('orders-pagination');
+            const q = (document.getElementById('orders-search-input')?.value || '').trim();
+            const provider = (document.getElementById('orders-provider-filter')?.value || '').trim();
+            const status = (document.getElementById('orders-status-filter')?.value || '').trim();
+            if (tbody) tbody.innerHTML = '<tr><td colspan="8">Chargement…</td></tr>';
+            const params = new URLSearchParams();
+            params.set('page', String(page));
+            params.set('limit', '25');
+            if (q) params.set('q', q);
+            if (provider) params.set('provider', provider);
+            if (status) params.set('status', status);
+            const res = await fetch(`/api/admin/orders?${params.toString()}`, { headers: { 'Authorization': `Basic ${authToken}` } });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok || !data.success) throw new Error(data.message || 'Erreur chargement');
+            renderOrdersList(data);
+            // pagination
+            if (pag) {
+                const total = Number(data.total || 0);
+                const limit = Number(data.limit || 25);
+                const cur = Number(data.page || 1);
+                const pages = Math.max(1, Math.ceil(total / limit));
+                pag.innerHTML = '';
+                const info = document.createElement('span');
+                info.textContent = `Page ${cur} / ${pages} — ${total} commande(s)`;
+                const prev = document.createElement('button');
+                prev.className = 'btn-secondary';
+                prev.textContent = 'Précédent';
+                prev.disabled = cur <= 1;
+                prev.addEventListener('click', () => loadOrdersList(cur - 1));
+                const next = document.createElement('button');
+                next.className = 'btn-secondary';
+                next.textContent = 'Suivant';
+                next.disabled = cur >= pages;
+                next.addEventListener('click', () => loadOrdersList(cur + 1));
+                pag.appendChild(prev);
+                pag.appendChild(info);
+                pag.appendChild(next);
+            }
+        } catch (e) {
+            showToast(e.message || 'Erreur lors du chargement des commandes', 'error');
+        }
+    }
+
+    function renderOrdersList(data) {
+        const tbody = document.getElementById('orders-list');
+        if (!tbody) return;
+        const orders = Array.isArray(data.orders) ? data.orders : [];
+        if (orders.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="8">Aucune commande</td></tr>';
+            return;
+        }
+        const frag = document.createDocumentFragment();
+        orders.forEach(o => {
+            const tr = document.createElement('tr');
+            const num = o.number || (o.provider ? (o.provider + '#' + String(o._id || '').slice(-6)) : (String(o._id || '').slice(-6)));
+            const created = o.createdAt ? new Date(o.createdAt).toLocaleString('fr-FR') : '';
+            const updated = o.updatedAt ? new Date(o.updatedAt).toLocaleString('fr-FR') : '';
+            const client = (o.customer && (o.customer.name || o.customer.email)) ? `${o.customer.name || ''} ${o.customer.email ? `<small>${o.customer.email}</small>` : ''}` : '—';
+            const src = o.provider || '—';
+            const st = o.status || '—';
+            const amt = formatMoney((o.totals && o.totals.amount) || 0, (o.totals && o.totals.currency) || 'EUR');
+            
+            const actions = document.createElement('div');
+            actions.style.display = 'flex';
+            actions.style.gap = '6px';
+            const btnPay = document.createElement('button');
+            btnPay.className = 'btn-secondary';
+            btnPay.textContent = 'Lien paiement';
+            btnPay.dataset.action = 'payment-link';
+            btnPay.dataset.id = o._id;
+            const btnPaid = document.createElement('button');
+            btnPaid.className = 'btn-secondary';
+            btnPaid.textContent = 'Marquer payé';
+            btnPaid.dataset.action = 'mark-paid';
+            btnPaid.dataset.id = o._id;
+            const btnShip = document.createElement('button');
+            btnShip.className = 'btn-secondary';
+            btnShip.textContent = 'Expédier';
+            btnShip.dataset.action = 'ship';
+            btnShip.dataset.id = o._id;
+            actions.appendChild(btnPay);
+            actions.appendChild(btnPaid);
+            actions.appendChild(btnShip);
+
+            tr.innerHTML = `
+                <td>${num}</td>
+                <td>${created}</td>
+                <td>${client}</td>
+                <td>${src}</td>
+                <td>${st}</td>
+                <td>${amt}</td>
+                <td>${updated}</td>
+                <td></td>
+            `;
+            const tdActions = tr.querySelector('td:last-child');
+            tdActions.appendChild(actions);
+            tr.classList.add('order-row');
+            frag.appendChild(tr);
+        });
+        tbody.innerHTML = '';
+        tbody.appendChild(frag);
+    }
+    
     function handleHashRoute() {
         const hash = window.location.hash;
         // La documentation doit être consultable même sans être connecté
@@ -2210,6 +2450,11 @@ async function checkAuth() {
             showDocs();
             // Mettre à jour la visibilité des sections réservées admin
             try { if (typeof applyRoleBasedUI === 'function') applyRoleBasedUI(); } catch(_) {}
+            return;
+        }
+        if (hash === '#orders') {
+            if (!authToken) return;
+            showOrders();
             return;
         }
         if (!authToken) return;
