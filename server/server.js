@@ -188,7 +188,7 @@ async function syncWooAllOrders() {
     const cs = (process.env.WOOCOMMERCE_CONSUMER_SECRET || '').trim();
     if (!base || !ck || !cs) throw new Error('Variables WooCommerce manquantes');
     let page = 1;
-    const perPage = 50; // réduire pour fiabiliser en prod (Railway)
+    const perPage = 25; // réduire davantage pour fiabiliser en prod (Railway)
     let processed = 0;
     for (;;) {
       const baseUrl = `${base.replace(/\/$/, '')}/wp-json/wc/v3/orders?per_page=${perPage}&page=${page}&orderby=date&order=desc`;
@@ -197,6 +197,11 @@ async function syncWooAllOrders() {
       if (!resp.ok) {
         const alt = `${base.replace(/\/$/, '')}/wp-json/wc/v3/orders?consumer_key=${encodeURIComponent(ck)}&consumer_secret=${encodeURIComponent(cs)}&per_page=${perPage}&page=${page}&orderby=date&order=desc`;
         resp = await fetch(alt, { headers: { 'Accept': 'application/json', 'User-Agent': 'CarPartsSAV/1.0' } });
+        if (!resp.ok) {
+          // backoff 1s puis 2e tentative en alt
+          await new Promise(r => setTimeout(r, 1000));
+          resp = await fetch(alt, { headers: { 'Accept': 'application/json', 'User-Agent': 'CarPartsSAV/1.0' } });
+        }
       }
       if (!resp.ok) {
         const txt = await resp.text().catch(() => '');
@@ -605,6 +610,10 @@ async function syncWooRecentOrders() {
     if (!resp.ok) {
       const url2 = `${base.replace(/\/$/, '')}/wp-json/wc/v3/orders?consumer_key=${encodeURIComponent(ck)}&consumer_secret=${encodeURIComponent(cs)}&after=${encodeURIComponent(since)}&per_page=20&orderby=date&order=desc`;
       resp = await fetch(url2, { headers: { 'Accept': 'application/json', 'User-Agent': 'CarPartsSAV/1.0' } });
+      if (!resp.ok) {
+        await new Promise(r => setTimeout(r, 1000));
+        resp = await fetch(url2, { headers: { 'Accept': 'application/json', 'User-Agent': 'CarPartsSAV/1.0' } });
+      }
     }
     if (!resp.ok) {
       const txt = await resp.text().catch(() => '');
@@ -1320,6 +1329,35 @@ app.get('/api/admin/me', authenticateAdmin, (req, res) => {
     return res.json({ success: true, role: info.role, id: info.id, email: info.email });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Erreur serveur' });
+  }
+});
+
+// Diagnostic de l'API WooCommerce (ADMIN uniquement)
+app.get('/api/admin/diagnostics/woo', authenticateAdmin, ensureAdmin, async (req, res) => {
+  const base = (process.env.WOOCOMMERCE_BASE_URL || '').trim();
+  const ck = (process.env.WOOCOMMERCE_CONSUMER_KEY || '').trim();
+  const cs = (process.env.WOOCOMMERCE_CONSUMER_SECRET || '').trim();
+  const present = { base: !!base, ck: !!ck, cs: !!cs };
+  let urlUsed = null; let method = null; let status = null; let bodySnippet = '';
+  try {
+    if (!present.base || !present.ck || !present.cs) {
+      return res.json({ success: false, message: 'Variables WooCommerce manquantes', present });
+    }
+    const baseUrl = `${base.replace(/\/$/, '')}/wp-json/wc/v3/orders?per_page=1&orderby=date&order=desc`;
+    urlUsed = baseUrl; method = 'basic';
+    let r = await fetch(baseUrl, { headers: { 'Authorization': `Basic ${base64(`${ck}:${cs}`)}`, 'Accept': 'application/json', 'User-Agent': 'CarPartsSAV/1.0' } });
+    status = r.status;
+    if (!r.ok) {
+      const alt = `${base.replace(/\/$/, '')}/wp-json/wc/v3/orders?consumer_key=${encodeURIComponent(ck)}&consumer_secret=${encodeURIComponent(cs)}&per_page=1&orderby=date&order=desc`;
+      urlUsed = alt; method = 'query';
+      r = await fetch(alt, { headers: { 'Accept': 'application/json', 'User-Agent': 'CarPartsSAV/1.0' } });
+      status = r.status;
+    }
+    const txt = await r.text().catch(() => '');
+    bodySnippet = (txt || '').slice(0, 600);
+    return res.json({ success: true, present, method, status, urlUsed, bodySnippetLength: bodySnippet.length, bodySnippet });
+  } catch (e) {
+    return res.json({ success: false, present, method, status, urlUsed, error: (e && e.message) || String(e) });
   }
 });
 
