@@ -345,12 +345,94 @@
                         </div>
                         <h2><i class="fas fa-shopping-cart"></i> Commandes</h2>
 
+                        <!-- Styles spécifiques pour la barre d'actions Commandes (anti-chevauchement) -->
+                        <style>
+                            /* Container principal: boutons + zone de filtres */
+                            .settings-actions {
+                                display: flex;
+                                gap: 8px;
+                                align-items: center;
+                                flex-wrap: wrap; /* autorise le retour à la ligne */
+                            }
+                            .settings-actions > button { flex-shrink: 0; }
+                            /* Zone de filtres à droite */
+                            #orders-toolbar-filters {
+                                flex: 1 1 480px; /* prend l'espace restant, base 480px */
+                                min-width: 260px;
+                                display: flex;
+                                gap: 8px;
+                                justify-content: flex-end;
+                                align-items: center;
+                                flex-wrap: wrap; /* autorise l'habillage des champs */
+                            }
+                            #orders-toolbar-filters > * { flex: 0 1 auto; }
+                            /* Champ de recherche extensible */
+                            #orders-search-input { flex: 1 1 260px; min-width: 220px; }
+                            /* Largeurs minimales pour éviter l'écrasement visuel */
+                            #orders-provider-filter,
+                            #orders-status-filter,
+                            #orders-from,
+                            #orders-to,
+                            #orders-sort { min-width: 150px; }
+                            #orders-export-btn { flex-shrink: 0; }
+                            /* Ajustements responsive */
+                            @media (max-width: 1100px) {
+                                #orders-toolbar-filters { justify-content: flex-start; }
+                            }
+                            @media (max-width: 800px) {
+                                .settings-actions { gap: 6px; }
+                                #orders-toolbar-filters { flex-basis: 100%; }
+                            }
+                            /* Améliorations visuelles: tailles, arrondis, états */
+                            .settings-actions .btn-primary,
+                            .settings-actions .btn-secondary,
+                            #orders-toolbar-filters input[type="text"],
+                            #orders-toolbar-filters input[type="date"],
+                            #orders-toolbar-filters select {
+                                height: 36px;
+                                line-height: 1;
+                                border-radius: 10px;
+                            }
+                            .settings-actions .btn-primary,
+                            .settings-actions .btn-secondary {
+                                padding: 8px 14px;
+                                display: inline-flex;
+                                align-items: center;
+                                gap: 8px;
+                                white-space: nowrap;
+                            }
+                            .settings-actions .btn-secondary { background: #fff; border: 1px solid #e5e7eb; }
+                            .settings-actions .btn-secondary:hover { background: #f9fafb; border-color: #d1d5db; }
+                            .settings-actions .btn-primary:hover { filter: brightness(0.95); }
+                            .settings-actions .btn-primary i,
+                            .settings-actions .btn-secondary i { opacity: 0.9; }
+                            /* Champs */
+                            #orders-toolbar-filters input[type="text"],
+                            #orders-toolbar-filters input[type="date"],
+                            #orders-toolbar-filters select {
+                                border: 1px solid #d1d5db;
+                                background: #fff;
+                                padding: 6px 10px;
+                            }
+                            #orders-toolbar-filters input[type="text"]::placeholder { color: #9ca3af; }
+                            #orders-toolbar-filters input[type="text"]:focus,
+                            #orders-toolbar-filters input[type="date"]:focus,
+                            #orders-toolbar-filters select:focus {
+                                outline: none;
+                                border-color: #93c5fd;
+                                box-shadow: 0 0 0 3px rgba(59,130,246,0.15);
+                            }
+                            /* Bouton Export détaché visuellement */
+                            #orders-export-btn { border: 1px solid #e5e7eb; background:#fff; }
+                            #orders-export-btn:hover { background:#f9fafb; border-color:#d1d5db; }
+                        </style>
                         <div class="settings-actions" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
                             <button id="orders-create-btn" class="btn-primary"><i class="fas fa-plus"></i> Créer une commande (brouillon)</button>
                             <button id="orders-refresh-btn" class="btn-secondary"><i class="fas fa-rotate"></i> Rafraîchir</button>
                             <button id="orders-sync-btn" class="btn-secondary"><i class="fas fa-cloud-download-alt"></i> Synchroniser (Woo+Mollie)</button>
                             <button id="orders-sync-woo-all-btn" class="btn-secondary"><i class="fas fa-database"></i> Importer toutes les commandes Woo</button>
-                            <div style="flex:1; min-width:220px; display:flex; gap:8px; justify-content:flex-end;">
+                            <button id="orders-rebuild-techref-btn" class="btn-secondary" title="Détecter et marquer les références techniques requises sur toutes les commandes existantes"><i class="fas fa-wrench"></i> Recalculer Réf techniques</button>
+                            <div id="orders-toolbar-filters" style="flex:1; min-width:220px; display:flex; gap:8px; justify-content:flex-end; align-items:center; flex-wrap:wrap;">
                                 <input type="text" id="orders-search-input" placeholder="Recherche (numéro, email, SKU)" style="flex:1; min-width:220px;">
                                 <select id="orders-provider-filter">
                                     <option value="">Toutes sources</option>
@@ -371,6 +453,22 @@
                                     <option value="refunded">Remboursée</option>
                                     <option value="disputed">Litige</option>
                                 </select>
+                                <input type="date" id="orders-from" title="Du">
+                                <input type="date" id="orders-to" title="Au">
+                                <select id="orders-sort" title="Tri">
+                                    <option value="date_desc">Date (récent d'abord)</option>
+                                    <option value="date_asc">Date (ancien d'abord)</option>
+                                    <option value="amount_desc">Montant (desc)</option>
+                                    <option value="amount_asc">Montant (asc)</option>
+                                    <option value="number_desc">Numéro (desc)</option>
+                                    <option value="number_asc">Numéro (asc)</option>
+                                    <option value="status_asc">Statut (A→Z)</option>
+                                    <option value="status_desc">Statut (Z→A)</option>
+                                </select>
+                                <label title="Afficher les commandes où la référence technique est requise mais manquante" style="display:inline-flex; align-items:center; gap:6px; font-size:13px; color:#374151;">
+                                    <input type="checkbox" id="orders-missing-techref" /> Réf manquante
+                                </label>
+                                <button id="orders-export-btn" class="btn-secondary" title="Exporter CSV"><i class="fas fa-file-export"></i> Export CSV</button>
                             </div>
                         </div>
 
@@ -393,6 +491,18 @@
                                 </tbody>
                             </table>
                             <div class="pagination" id="orders-pagination" style="margin-top:10px;"></div>
+                        </div>
+                        <!-- Panneau de détails de commande -->
+                        <div id="order-details-panel" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.35); z-index:9999;">
+                            <div style="position:absolute; top:0; right:0; height:100%; width:860px; max-width:96vw; min-width:360px; background:#fff; box-shadow: -2px 0 10px rgba(0,0,0,0.2); overflow:auto;">
+                                <div style="display:flex; align-items:center; justify-content:space-between; padding:12px 16px; border-bottom:1px solid #eee;">
+                                    <h3 style="margin:0; font-size:18px;"><i class="fas fa-receipt"></i> Détails de la commande</h3>
+                                    <button id="order-details-close" class="btn-secondary" title="Fermer"><i class="fas fa-times"></i></button>
+                                </div>
+                                <div id="order-details-content" style="padding:12px 16px;">
+                                    <!-- Contenu injecté dynamiquement -->
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>

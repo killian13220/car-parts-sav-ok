@@ -43,15 +43,30 @@ const orderSchema = new mongoose.Schema({
     mollieMode: String,
     mollieStatus: String
   },
+  billing: {
+    address: Object
+  },
   shipping: {
     address: Object,
     carrier: String,
     trackingNumber: String,
-    shippedAt: Date
+    shippedAt: Date,
+    estimatedDeliveryAt: Date
   },
   meta: {
     sourcePayloadHash: String,
-    notes: [String]
+    sourceCreatedAt: Date,
+    sourceUpdatedAt: Date,
+    // VIN / Plaque d'immatriculation saisi côté Woo (ou côté outil)
+    vinOrPlate: String,
+    // Clé et identifiant meta Woo correspondants si détectés
+    wooVinMetaKey: String,
+    wooVinMetaId: String,
+    notes: [String],
+    // Références techniques internes (mécatronique/TCU)
+    engineDisplacement: String, // ex: "1.4"
+    tcuReference: String,       // ex: "0AM927769D"
+    technicalRefRequired: { type: Boolean, default: false }
   },
   events: [orderEventSchema]
 }, { timestamps: true });

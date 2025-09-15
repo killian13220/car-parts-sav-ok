@@ -24,6 +24,25 @@ let fetch = global.fetch;
 if (!fetch) {
   try { fetch = require('undici').fetch; } catch (_) {}
 }
+
+// Détection auto: commande susceptible d'exiger des références techniques (méca/TCU)
+function detectTechRefFromItems(items) {
+  try {
+    if (!Array.isArray(items) || items.length === 0) return false;
+    const keywords = [
+      'mecatron', 'mécatron', 'mechatron', 'tcu', 'boite', 'boîte', 'gearbox', 'mechatronics',
+      'dq200', 'dq250', 'dq381', '0am', '0cw', '0am927', '0am 927', '0am-927'
+    ];
+    for (const it of items) {
+      const name = String(it?.name || '').toLowerCase();
+      const sku = String(it?.sku || '').toLowerCase();
+      for (const k of keywords) {
+        if (name.includes(k) || sku.includes(k)) return true;
+      }
+    }
+    return false;
+  } catch { return false; }
+}
 const { sendStatusUpdateEmail, sendTicketCreationEmail, sendAssignmentEmail, sendAssistanceRequestEmail, sendEscalationEmail, sendSlaReminderEmail, sendPasswordResetEmail } = require('./services/emailService');
 const setupStatsRoutes = require('./stats-api');
 const { authenticateAdmin: adminAuthMW } = require('./middleware/auth');
@@ -46,7 +65,19 @@ connectDB();
 // Quand la connexion DB est ouverte, lancer l'import auto si nécessaire
 mongoose.connection.once('open', () => {
   try { autoImportDocsFromFSIfEmpty(); } catch (_) {}
+  // Recalcul rétroactif automatique des références requises sur anciennes commandes
+  try {
+    rebuildTechnicalRefsInternal()
+      .then(({ scanned, updated }) => {
+        console.log(`[techref] Rétroactif terminé: ${updated} mise(s) à jour sur ${scanned} commande(s)`);
+      })
+      .catch((e) => console.warn('[techref] Rétroactif: erreur non bloquante', e?.message || e));
+  } catch(_) {}
 });
+
+// (Route DELETE déplacée plus bas après définition des middlewares)
+
+// (Route déplacée plus bas après définition des middlewares)
 
 // Seed default response templates if collection is empty
 async function seedResponseTemplates() {
@@ -64,6 +95,28 @@ async function seedResponseTemplates() {
   } catch (e) {
     console.error('[seed] Erreur lors du seed des modèles de réponse:', e);
   }
+}
+
+// Fonction interne: recalculer en base les références techniques requises (rétroactif)
+async function rebuildTechnicalRefsInternal() {
+  let scanned = 0;
+  let updated = 0;
+  const cursor = Order.find({}, { items: 1, meta: 1 }).cursor();
+  for (let doc = await cursor.next(); doc != null; doc = await cursor.next()) {
+    scanned++;
+    const items = Array.isArray(doc.items) ? doc.items : [];
+    const needs = detectTechRefFromItems(items);
+    const alreadyTrue = !!(doc.meta && doc.meta.technicalRefRequired === true);
+    if (needs && !alreadyTrue) {
+      doc.meta = doc.meta || {};
+      doc.meta.technicalRefRequired = true;
+      doc.events = doc.events || [];
+      doc.events.push({ type: 'technical_ref_required_set', message: 'Référence technique requise (rétroactif auto)', at: new Date() });
+      await doc.save();
+      updated++;
+    }
+  }
+  return { scanned, updated };
 }
 seedResponseTemplates();
 
@@ -157,6 +210,10 @@ async function syncWooAllOrders() {
         const internalStatus = mapWooStatusToInternal(payload.status);
         const amount = parseFloat((payload.total || payload.total_due || '0').toString());
         const currency = (payload.currency || 'EUR').toString();
+        const wooCreatedRaw = payload.date_created_gmt || payload.date_created || null;
+        const wooUpdatedRaw = payload.date_modified_gmt || payload.date_modified || null;
+        const wooCreated = wooCreatedRaw ? new Date(wooCreatedRaw) : null;
+        const wooUpdated = wooUpdatedRaw ? new Date(wooUpdatedRaw) : null;
         const customer = payload.billing ? {
           name: `${payload.billing.first_name || ''} ${payload.billing.last_name || ''}`.trim(),
           email: payload.billing.email || '',
@@ -168,6 +225,27 @@ async function syncWooAllOrders() {
           qty: li.quantity || 0,
           unitPrice: parseFloat((li.price || li.total || 0).toString())
         })) : [];
+        const billingAddress = payload.billing ? {
+          name: `${payload.billing.first_name || ''} ${payload.billing.last_name || ''}`.trim(),
+          company: payload.billing.company || '',
+          address1: payload.billing.address_1 || '',
+          address2: payload.billing.address_2 || '',
+          city: payload.billing.city || '',
+          postcode: payload.billing.postcode || '',
+          country: payload.billing.country || '',
+          email: payload.billing.email || '',
+          phone: payload.billing.phone || ''
+        } : null;
+        const shippingAddress = payload.shipping ? {
+          name: `${payload.shipping.first_name || ''} ${payload.shipping.last_name || ''}`.trim(),
+          company: payload.shipping.company || '',
+          address1: payload.shipping.address_1 || '',
+          address2: payload.shipping.address_2 || '',
+          city: payload.shipping.city || '',
+          postcode: payload.shipping.postcode || '',
+          country: payload.shipping.country || '',
+          phone: payload.shipping.phone || (payload.billing?.phone || '')
+        } : null;
         const update = {
           provider: 'woocommerce',
           providerOrderId: wooId,
@@ -176,11 +254,33 @@ async function syncWooAllOrders() {
           customer,
           totals: { currency, amount: isNaN(amount) ? 0 : amount },
           items,
-          events: [{ type: 'woo_sync_full', message: `Full sync Woo status=${payload.status}`, payloadSnippet: { id: wooId, status: payload.status } }]
+          events: [{ type: 'woo_sync_full', message: `Full sync Woo status=${payload.status}`, payloadSnippet: { id: wooId, status: payload.status } }],
+          ...(wooCreated ? { 'meta.sourceCreatedAt': wooCreated } : {}),
+          ...(wooUpdated ? { 'meta.sourceUpdatedAt': wooUpdated } : {}),
+          ...(billingAddress ? { 'billing.address': billingAddress } : {}),
+          ...(shippingAddress ? { 'shipping.address': shippingAddress } : {})
         };
+        // VIN/Plaque depuis meta_data
+        let vinMeta = null;
+        try { vinMeta = extractVinFromWooMeta(payload.meta_data); } catch {}
+        if (vinMeta && vinMeta.value) {
+          update['meta.vinOrPlate'] = vinMeta.value;
+          if (vinMeta.key) update['meta.wooVinMetaKey'] = vinMeta.key;
+          if (vinMeta.id) update['meta.wooVinMetaId'] = String(vinMeta.id);
+        }
+        const setOnInsert = wooCreated ? { createdAt: wooCreated } : {};
+        // Définir le flag de référence technique requise uniquement à la création (respect du toggle manuel ensuite)
+        try {
+          const autoFlag = detectTechRefFromItems(items);
+          if (autoFlag) setOnInsert['meta.technicalRefRequired'] = true;
+        } catch {}
+        const ops = { $set: update, $setOnInsert: setOnInsert };
+        if (!vinMeta || !vinMeta.value) {
+          ops.$unset = { 'meta.vinOrPlate': '' };
+        }
         await Order.updateOne(
           { provider: 'woocommerce', providerOrderId: wooId },
-          { $set: update },
+          ops,
           { upsert: true }
         );
       }
@@ -254,6 +354,244 @@ const diskStorage = multer.diskStorage({
   }
 });
 
+// Helpers WooCommerce
+async function wooUpdateOrder(wooOrderId, wooPayload) {
+  const base = (process.env.WOOCOMMERCE_BASE_URL || '').trim();
+  const ck = (process.env.WOOCOMMERCE_CONSUMER_KEY || '').trim();
+  const cs = (process.env.WOOCOMMERCE_CONSUMER_SECRET || '').trim();
+  if (!base || !ck || !cs) throw new Error('Config WooCommerce manquante');
+  const url = `${base.replace(/\/$/, '')}/wp-json/wc/v3/orders/${encodeURIComponent(String(wooOrderId))}`;
+  let resp = await fetch(url, {
+    method: 'PUT',
+    headers: { 'Authorization': `Basic ${Buffer.from(`${ck}:${cs}`).toString('base64')}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(wooPayload)
+  });
+  if (resp.status === 401 || resp.status === 403) {
+    // fallback en query
+    const alt = `${url}?consumer_key=${encodeURIComponent(ck)}&consumer_secret=${encodeURIComponent(cs)}`;
+    resp = await fetch(alt, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(wooPayload) });
+  }
+  if (!resp.ok) {
+    const txt = await resp.text().catch(() => '');
+    throw new Error(`Woo update HTTP ${resp.status}: ${txt}`);
+  }
+  return await resp.json();
+}
+
+function splitName(fullName) {
+  const s = String(fullName || '').trim();
+  if (!s) return { first_name: '', last_name: '' };
+  const parts = s.split(/\s+/);
+  if (parts.length === 1) return { first_name: parts[0], last_name: '' };
+  const last = parts.pop();
+  return { first_name: parts.join(' '), last_name: last };
+}
+
+// Extraire VIN / Plaque depuis les meta WooCommerce
+function extractVinFromWooMeta(metaArr) {
+  try {
+    if (!Array.isArray(metaArr)) return null;
+    const norm = (s) => String(s || '').toLowerCase();
+    const normKey = (s) => norm(s).replace(/[^a-z0-9]/g, '');
+    const isUrl = (v) => /^(https?:\/\/|www\.)/i.test(v) || v.includes('://') || /\/(product|wp-|\?|#)/i.test(v);
+    const looksVin = (v) => /^[A-HJ-NPR-Z0-9]{17}$/i.test(String(v).replace(/\s/g, ''));
+    const looksFrPlate = (v) => /\b[A-Z]{2}-?\d{3}-?[A-Z]{2}\b/i.test(String(v).replace(/\s/g, ''));
+    const keywordKeys = [
+      'vin', 'vin_', 'vinclient', 'vinplaque', 'vinouplaque', 'vinimmatriculation',
+      'plaque', 'immatriculation', 'numeroimmatriculation',
+      'registration', 'licenseplate', 'numberplate', 'vehiclevin', 'vehiculevin'
+    ];
+    const keyIncludes = ['vin', 'immatric', 'plaque', 'registration', 'license', 'plate'];
+
+    let best = null;
+    let bestScore = -1;
+    for (const m of metaArr) {
+      const rawKey = m?.key ?? m?.display_key ?? '';
+      const keyL = norm(rawKey);
+      const keyN = normKey(rawKey);
+      const rawVal = m?.value;
+      const val = String(rawVal ?? '').trim();
+      if (!val) continue;
+      if (isUrl(val)) continue; // ignorer URLs et referrers
+
+      const byExactKey = keywordKeys.some(k => keyN === normKey(k));
+      const byKeyInclude = keyIncludes.some(k => keyL.includes(k));
+      const byVin = looksVin(val);
+      const byPlate = looksFrPlate(val);
+
+      // Scoring: clé exacte > clé indicative > format VIN > format plaque
+      let score = -1;
+      if (byExactKey) score = 100;
+      else if (byKeyInclude) score = 80;
+      if (byVin) score = Math.max(score, 75);
+      if (byPlate) score = Math.max(score, 65);
+      if (score < 0) continue; // rien d'assez fiable
+
+      // Préférence: si clé parle de vin/plaque mais valeur trop longue, on filtre
+      if ((byExactKey || byKeyInclude) && val.length > 64) continue;
+
+      if (score > bestScore) {
+        bestScore = score;
+        best = { key: rawKey || 'vin_or_plaque', id: m.id != null ? String(m.id) : undefined, value: val };
+      }
+    }
+    return best;
+  } catch { return null; }
+}
+// Mise à jour d'une commande (et sync Woo si provider=woocommerce)
+app.put('/api/admin/orders/:id', adminAuthMW, async (req, res) => {
+  try {
+    const order = await Order.findById(req.params.id);
+    if (!order) return res.status(404).json({ success: false, message: 'Commande introuvable' });
+
+    const body = req.body || {};
+    const next = { events: order.events || [] };
+
+    // Customer
+    if (body.customer && typeof body.customer === 'object') {
+      order.customer = order.customer || {};
+      if (typeof body.customer.name === 'string') order.customer.name = body.customer.name;
+      if (typeof body.customer.email === 'string') order.customer.email = body.customer.email;
+      if (typeof body.customer.phone === 'string') order.customer.phone = body.customer.phone;
+    }
+
+    // Billing address
+    if (body.billing && typeof body.billing === 'object' && body.billing.address) {
+      order.billing = order.billing || {};
+      order.billing.address = body.billing.address;
+    }
+
+    // Shipping address
+    if (body.shipping && typeof body.shipping === 'object' && body.shipping.address) {
+      order.shipping = order.shipping || {};
+      order.shipping.address = body.shipping.address;
+    }
+
+    // Estimated delivery date (optionnelle)
+    if (body.shipping && typeof body.shipping === 'object' && 'estimatedDeliveryAt' in body.shipping) {
+      order.shipping = order.shipping || {};
+      const raw = body.shipping.estimatedDeliveryAt;
+      if (typeof raw === 'string') {
+        const s = raw.trim();
+        if (s) {
+          // Accepte 'YYYY-MM-DD' ou ISO
+          const iso = /^\d{4}-\d{2}-\d{2}$/.test(s) ? `${s}T00:00:00.000Z` : s;
+          const d = new Date(iso);
+          if (!isNaN(d.getTime())) {
+            order.shipping.estimatedDeliveryAt = d;
+            next.events.push({ type: 'estimated_delivery_set', message: `Livraison estimée: ${d.toISOString().slice(0,10)}`, at: new Date() });
+          }
+        } else {
+          // Vide => suppression
+          order.shipping.estimatedDeliveryAt = undefined;
+          next.events.push({ type: 'estimated_delivery_unset', message: 'Livraison estimée retirée', at: new Date() });
+        }
+      }
+    }
+
+    // VIN / Plaque (métadonnée interne et Woo)
+    let vinFromBody;
+    if (body.meta && typeof body.meta === 'object' && typeof body.meta.vinOrPlate === 'string') {
+      vinFromBody = body.meta.vinOrPlate.trim();
+      order.meta = order.meta || {};
+      order.meta.vinOrPlate = vinFromBody;
+    }
+
+    // Références techniques (mécatronique/TCU)
+    if (body.meta && typeof body.meta === 'object') {
+      order.meta = order.meta || {};
+      if (typeof body.meta.engineDisplacement === 'string') {
+        const prev = order.meta.engineDisplacement || '';
+        const nextVal = body.meta.engineDisplacement.trim();
+        order.meta.engineDisplacement = nextVal;
+        if (nextVal !== prev) next.events.push({ type: 'technical_ref_updated', message: `Cylindrée: ${nextVal || '—'}`, at: new Date() });
+      }
+      if (typeof body.meta.tcuReference === 'string') {
+        const prev = order.meta.tcuReference || '';
+        const nextVal = body.meta.tcuReference.trim().toUpperCase();
+        order.meta.tcuReference = nextVal;
+        if (nextVal !== prev) next.events.push({ type: 'technical_ref_updated', message: `TCU: ${nextVal || '—'}`, at: new Date() });
+      }
+      if (typeof body.meta.technicalRefRequired === 'boolean') {
+        const prev = !!order.meta.technicalRefRequired;
+        const nextVal = !!body.meta.technicalRefRequired;
+        order.meta.technicalRefRequired = nextVal;
+        if (nextVal !== prev) next.events.push({ type: 'technical_ref_required_set', message: nextVal ? 'Référence technique requise' : 'Référence technique non requise', at: new Date() });
+      }
+    }
+
+    // Préparer push Woo si applicable
+    if (order.provider === 'woocommerce' && order.providerOrderId) {
+      const billingAddr = body.billing?.address || order.billing?.address || {};
+      const shippingAddr = body.shipping?.address || order.shipping?.address || {};
+      const nameForBilling = (body.customer?.name) || billingAddr.name || order.customer?.name || '';
+      const splitBill = splitName(nameForBilling);
+      const wooPayload = {
+        billing: {
+          first_name: splitBill.first_name,
+          last_name: splitBill.last_name,
+          company: billingAddr.company || '',
+          address_1: billingAddr.address1 || '',
+          address_2: billingAddr.address2 || '',
+          city: billingAddr.city || '',
+          postcode: billingAddr.postcode || '',
+          country: billingAddr.country || '',
+          email: (body.customer?.email) || order.customer?.email || '',
+          phone: (body.customer?.phone) || order.customer?.phone || ''
+        },
+        shipping: {
+          first_name: (shippingAddr.name ? splitName(shippingAddr.name).first_name : splitBill.first_name),
+          last_name: (shippingAddr.name ? splitName(shippingAddr.name).last_name : splitBill.last_name),
+          company: shippingAddr.company || '',
+          address_1: shippingAddr.address1 || '',
+          address_2: shippingAddr.address2 || '',
+          city: shippingAddr.city || '',
+          postcode: shippingAddr.postcode || '',
+          country: shippingAddr.country || ''
+        }
+      };
+
+      // Inclure meta_data si vin/plaque fourni
+      if (typeof vinFromBody === 'string') {
+        const metaArr = [];
+        const keyToUse = (order.meta?.wooVinMetaKey) || 'vin_or_plaque';
+        const idToUse = order.meta?.wooVinMetaId ? Number(order.meta.wooVinMetaId) : undefined;
+        const metaEntry = { key: keyToUse, value: vinFromBody };
+        if (!Number.isNaN(idToUse) && idToUse) metaEntry.id = idToUse;
+        metaArr.push(metaEntry);
+        wooPayload.meta_data = metaArr;
+      }
+
+      // Envoyer vers Woo d'abord, sinon on ne sauvegarde pas localement pour éviter les écarts
+      const wooResp = await wooUpdateOrder(order.providerOrderId, wooPayload);
+      // Mettre à jour les dates source si renvoyées
+      try {
+        const wooCreated = wooResp.date_created_gmt || wooResp.date_created || null;
+        const wooUpdated = wooResp.date_modified_gmt || wooResp.date_modified || null;
+        order.meta = order.meta || {};
+        if (wooCreated) order.meta.sourceCreatedAt = new Date(wooCreated);
+        if (wooUpdated) order.meta.sourceUpdatedAt = new Date(wooUpdated);
+        // Actualiser vin/plaque et méta id/key depuis la réponse
+        const metaFromResp = extractVinFromWooMeta(wooResp.meta_data);
+        if (metaFromResp && metaFromResp.value) {
+          order.meta.vinOrPlate = metaFromResp.value;
+          order.meta.wooVinMetaKey = metaFromResp.key || order.meta.wooVinMetaKey || 'vin_or_plaque';
+          if (metaFromResp.id) order.meta.wooVinMetaId = metaFromResp.id;
+        }
+      } catch {}
+      next.events.push({ type: 'woo_update_pushed', message: 'Mise à jour envoyée à Woo', payloadSnippet: { id: order.providerOrderId } });
+    }
+
+    next.events.push({ type: 'order_updated_admin', message: 'Commande modifiée par admin' });
+    order.events = next.events;
+    await order.save();
+    res.json({ success: true, order });
+  } catch (e) {
+    console.error('[orders:update] erreur', e);
+    res.status(500).json({ success: false, message: e.message || 'Erreur serveur' });
+  }
+});
+
 // --- Job de secours: resynchronisation périodique des commandes (Woo & Mollie) ---
 function base64(str) { return Buffer.from(str, 'utf8').toString('base64'); }
 
@@ -286,6 +624,10 @@ async function syncWooRecentOrders() {
       const internalStatus = mapWooStatusToInternal(payload.status);
       const amount = parseFloat((payload.total || payload.total_due || '0').toString());
       const currency = (payload.currency || 'EUR').toString();
+      const wooCreatedRaw = payload.date_created_gmt || payload.date_created || null;
+      const wooUpdatedRaw = payload.date_modified_gmt || payload.date_modified || null;
+      const wooCreated = wooCreatedRaw ? new Date(wooCreatedRaw) : null;
+      const wooUpdated = wooUpdatedRaw ? new Date(wooUpdatedRaw) : null;
       const customer = payload.billing ? {
         name: `${payload.billing.first_name || ''} ${payload.billing.last_name || ''}`.trim(),
         email: payload.billing.email || '',
@@ -297,6 +639,27 @@ async function syncWooRecentOrders() {
         qty: li.quantity || 0,
         unitPrice: parseFloat((li.price || li.total || 0).toString())
       })) : [];
+      const billingAddress2 = payload.billing ? {
+        name: `${payload.billing.first_name || ''} ${payload.billing.last_name || ''}`.trim(),
+        company: payload.billing.company || '',
+        address1: payload.billing.address_1 || '',
+        address2: payload.billing.address_2 || '',
+        city: payload.billing.city || '',
+        postcode: payload.billing.postcode || '',
+        country: payload.billing.country || '',
+        email: payload.billing.email || '',
+        phone: payload.billing.phone || ''
+      } : null;
+      const shippingAddress2 = payload.shipping ? {
+        name: `${payload.shipping.first_name || ''} ${payload.shipping.last_name || ''}`.trim(),
+        company: payload.shipping.company || '',
+        address1: payload.shipping.address_1 || '',
+        address2: payload.shipping.address_2 || '',
+        city: payload.shipping.city || '',
+        postcode: payload.shipping.postcode || '',
+        country: payload.shipping.country || '',
+        phone: payload.shipping.phone || (payload.billing?.phone || '')
+      } : null;
       const update = {
         provider: 'woocommerce',
         providerOrderId: wooId,
@@ -305,11 +668,32 @@ async function syncWooRecentOrders() {
         customer,
         totals: { currency, amount: isNaN(amount) ? 0 : amount },
         items,
-        events: [{ type: 'woo_sync', message: `Sync Woo status=${payload.status}`, payloadSnippet: { id: wooId, status: payload.status } }]
+        events: [{ type: 'woo_sync', message: `Sync Woo status=${payload.status}`, payloadSnippet: { id: wooId, status: payload.status } }],
+        ...(wooCreated ? { 'meta.sourceCreatedAt': wooCreated } : {}),
+        ...(wooUpdated ? { 'meta.sourceUpdatedAt': wooUpdated } : {}),
+        ...(billingAddress2 ? { 'billing.address': billingAddress2 } : {}),
+        ...(shippingAddress2 ? { 'shipping.address': shippingAddress2 } : {})
       };
+      // VIN/Plaque depuis meta_data
+      let vinMeta2 = null;
+      try { vinMeta2 = extractVinFromWooMeta(payload.meta_data); } catch {}
+      if (vinMeta2 && vinMeta2.value) {
+        update['meta.vinOrPlate'] = vinMeta2.value;
+        if (vinMeta2.key) update['meta.wooVinMetaKey'] = vinMeta2.key;
+        if (vinMeta2.id) update['meta.wooVinMetaId'] = String(vinMeta2.id);
+      }
+      const setOnInsert = wooCreated ? { createdAt: wooCreated } : {};
+      try {
+        const autoFlag = detectTechRefFromItems(items);
+        if (autoFlag) setOnInsert['meta.technicalRefRequired'] = true;
+      } catch {}
+      const ops2 = { $set: update, $setOnInsert: setOnInsert };
+      if (!vinMeta2 || !vinMeta2.value) {
+        ops2.$unset = { 'meta.vinOrPlate': '' };
+      }
       await Order.updateOne(
         { provider: 'woocommerce', providerOrderId: wooId },
-        { $set: update },
+        ops2,
         { upsert: true }
       );
     }
@@ -941,6 +1325,50 @@ app.get('/api/admin/me', authenticateAdmin, (req, res) => {
     return res.json({ success: true, role: info.role, id: info.id, email: info.email });
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Erreur serveur' });
+  }
+});
+
+// Supprimer une commande (ADMIN uniquement)
+app.delete('/api/admin/orders/:id', authenticateAdmin, ensureAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!id || !id.match(/^[0-9a-fA-F]{24}$/)) {
+      return res.status(400).json({ success: false, message: 'ID invalide' });
+    }
+    const order = await Order.findById(id).lean();
+    if (!order) return res.status(404).json({ success: false, message: 'Commande introuvable' });
+    await Order.findByIdAndDelete(id);
+    return res.json({ success: true });
+  } catch (e) {
+    console.error('[orders:delete] erreur', e);
+    return res.status(500).json({ success: false, message: 'Erreur serveur' });
+  }
+});
+
+// Recalculer les références requises (rétroactif) sur toutes les commandes existantes
+app.post('/api/admin/orders/rebuild-technical-refs', authenticateAdmin, ensureAdminOrAgent, async (req, res) => {
+  try {
+    let scanned = 0;
+    let updated = 0;
+    const cursor = Order.find({}, { items: 1, meta: 1 }).cursor();
+    for (let doc = await cursor.next(); doc != null; doc = await cursor.next()) {
+      scanned++;
+      const items = Array.isArray(doc.items) ? doc.items : [];
+      const needs = detectTechRefFromItems(items);
+      const alreadyTrue = !!(doc.meta && doc.meta.technicalRefRequired === true);
+      if (needs && !alreadyTrue) {
+        doc.meta = doc.meta || {};
+        doc.meta.technicalRefRequired = true;
+        doc.events = doc.events || [];
+        doc.events.push({ type: 'technical_ref_required_set', message: 'Référence technique requise (rétroactif)', at: new Date() });
+        await doc.save();
+        updated++;
+      }
+    }
+    res.json({ success: true, scanned, updated });
+  } catch (e) {
+    console.error('[orders:rebuild-techref] erreur', e);
+    res.status(500).json({ success: false, message: 'Erreur serveur' });
   }
 });
 
@@ -2250,7 +2678,8 @@ function toAmountString(n) {
 
 function mapWooStatusToInternal(s) {
   const st = String(s || '').toLowerCase();
-  if (['processing', 'on-hold'].includes(st)) return 'paid';
+  if (st === 'processing') return 'processing';
+  if (st === 'on-hold') return 'awaiting_transfer';
   if (st === 'completed') return 'fulfilled';
   if (st === 'pending') return 'pending_payment';
   if (st === 'cancelled') return 'cancelled';
@@ -2305,7 +2734,7 @@ async function mollieGetPayment(paymentId) {
 }
 
 // --- Endpoints Admin Commandes ---
-// Liste des commandes (tri dernière activité desc, filtres simples)
+// Liste des commandes (filtres: q, provider, status, période; tri: number/status/amount/date)
 app.get('/api/admin/orders', authenticateAdmin, ensureAdminOrAgent, async (req, res) => {
   try {
     const page = Math.max(1, parseInt(req.query.page || '1', 10));
@@ -2314,6 +2743,11 @@ app.get('/api/admin/orders', authenticateAdmin, ensureAdminOrAgent, async (req, 
     const q = String(req.query.q || '').trim();
     const status = String(req.query.status || '').trim();
     const provider = String(req.query.provider || '').trim();
+    const from = String(req.query.from || '').trim();
+    const to = String(req.query.to || '').trim();
+    const sortBy = String(req.query.sort || '').trim() || 'date';
+    const missingTechRef = String(req.query.missingTechRef || '').trim().toLowerCase();
+    const dir = (String(req.query.dir || '').trim().toLowerCase() === 'asc') ? 1 : -1;
 
     const filter = {};
     if (status) filter.status = status;
@@ -2326,16 +2760,164 @@ app.get('/api/admin/orders', authenticateAdmin, ensureAdminOrAgent, async (req, 
         { 'items.sku': new RegExp(q, 'i') }
       ];
     }
+    // Filtre période (sur updatedAt)
+    if (from || to) {
+      const range = {};
+      const parseDate = (s) => {
+        // accepter yyyy-mm-dd ou ISO
+        if (!s) return null;
+        const d = s.length === 10 ? new Date(s + 'T00:00:00.000Z') : new Date(s);
+        return isNaN(d.getTime()) ? null : d;
+      };
+      const dFrom = parseDate(from);
+      const dTo = parseDate(to);
+      if (dFrom) range.$gte = dFrom;
+      if (dTo) {
+        // inclure toute la journée si format court
+        if (to.length === 10) {
+          const end = new Date(dTo);
+          end.setUTCHours(23,59,59,999);
+          range.$lte = end;
+        } else {
+          range.$lte = dTo;
+        }
+      }
+      filter.updatedAt = range;
+    }
 
-    const [ total, orders ] = await Promise.all([
-      Order.countDocuments(filter),
-      Order.find(filter).sort({ updatedAt: -1 }).skip(skip).limit(limit).lean()
-    ]);
+    // Tri
+    const sortMap = {
+      'date': 'updatedAt', // remplacé par agrégation spéciale ci-dessous
+      'created': 'createdAt',
+      'amount': 'totals.amount',
+      'status': 'status',
+      'number': 'number'
+    };
+
+    const total = await Order.countDocuments(filter);
+    let orders = [];
+    if (sortBy === 'date') {
+      // Utiliser la vraie date de création: meta.sourceCreatedAt sinon createdAt
+      const pipeline = [
+        { $match: filter },
+        { $addFields: { _sourceDate: { $ifNull: [ '$meta.sourceCreatedAt', '$createdAt' ] } } },
+        { $sort: { _sourceDate: dir } },
+        { $skip: skip },
+        { $limit: limit }
+      ];
+      orders = await Order.aggregate(pipeline);
+    } else {
+      const sortField = sortMap[sortBy] || 'updatedAt';
+      const sort = {}; sort[sortField] = dir;
+      orders = await Order.find(filter).sort(sort).skip(skip).limit(limit).lean();
+    }
 
     res.json({ success: true, page, limit, total, orders });
   } catch (e) {
     console.error('[orders:list] erreur', e);
     res.status(500).json({ success: false, message: 'Erreur serveur' });
+  }
+});
+
+// Export CSV des commandes selon les mêmes filtres
+app.get('/api/admin/orders/export.csv', authenticateAdmin, ensureAdminOrAgent, async (req, res) => {
+  try {
+    // Reutiliser la logique de filtres et tri, mais avec un plus grand plafond
+    const q = String(req.query.q || '').trim();
+    const status = String(req.query.status || '').trim();
+    const provider = String(req.query.provider || '').trim();
+    const from = String(req.query.from || '').trim();
+    const to = String(req.query.to || '').trim();
+    const sortBy = String(req.query.sort || '').trim() || 'date';
+    const dir = (String(req.query.dir || '').trim().toLowerCase() === 'asc') ? 1 : -1;
+    const limit = Math.min(5000, Math.max(1, parseInt(req.query.limit || '1000', 10)));
+
+    const filter = {};
+    if (status) filter.status = status;
+    if (provider) filter.provider = provider;
+    if (q) {
+      filter.$or = [
+        { number: new RegExp(q, 'i') },
+        { 'customer.email': new RegExp(q, 'i') },
+        { 'items.name': new RegExp(q, 'i') },
+        { 'items.sku': new RegExp(q, 'i') }
+      ];
+    }
+    if (from || to) {
+      const range = {};
+      const parseDate = (s) => {
+        if (!s) return null;
+        const d = s.length === 10 ? new Date(s + 'T00:00:00.000Z') : new Date(s);
+        return isNaN(d.getTime()) ? null : d;
+      };
+      const dFrom = parseDate(from);
+      const dTo = parseDate(to);
+      if (dFrom) range.$gte = dFrom;
+      if (dTo) {
+        if (to.length === 10) {
+          const end = new Date(dTo);
+          end.setUTCHours(23,59,59,999);
+          range.$lte = end;
+        } else {
+          range.$lte = dTo;
+        }
+      }
+      filter.updatedAt = range;
+    }
+    const sortMap = {
+      'date': 'updatedAt', // remplacé par agrégation spéciale ci-dessous
+      'created': 'createdAt',
+      'amount': 'totals.amount',
+      'status': 'status',
+      'number': 'number'
+    };
+
+    let orders = [];
+    if (sortBy === 'date') {
+      const pipeline = [
+        { $match: filter },
+        { $addFields: { _sourceDate: { $ifNull: [ '$meta.sourceCreatedAt', '$createdAt' ] } } },
+        { $sort: { _sourceDate: dir } },
+        { $limit: limit }
+      ];
+      orders = await Order.aggregate(pipeline);
+    } else {
+      const sortField = sortMap[sortBy] || 'updatedAt';
+      const sort = {}; sort[sortField] = dir;
+      orders = await Order.find(filter).sort(sort).limit(limit).lean();
+    }
+
+    const esc = (v) => {
+      const s = (v === null || v === undefined) ? '' : String(v);
+      if (s.includes('"') || s.includes(',') || s.includes('\n')) return '"' + s.replace(/"/g, '""') + '"';
+      return s;
+    };
+    const headers = ['id','number','provider','status','date_created','date_updated','customer_name','customer_email','customer_phone','currency','amount','items_count'];
+    const rows = [headers.join(',')];
+    for (const o of orders) {
+      const row = [
+        esc(o._id),
+        esc(o.number || ''),
+        esc(o.provider || ''),
+        esc(o.status || ''),
+        esc(o.createdAt ? new Date(o.createdAt).toISOString() : ''),
+        esc(o.updatedAt ? new Date(o.updatedAt).toISOString() : ''),
+        esc(o.customer?.name || ''),
+        esc(o.customer?.email || ''),
+        esc(o.customer?.phone || ''),
+        esc(o.totals?.currency || 'EUR'),
+        esc(o.totals?.amount || 0),
+        esc(Array.isArray(o.items) ? o.items.length : 0)
+      ];
+      rows.push(row.join(','));
+    }
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="orders-export.csv"');
+    res.send(rows.join('\n'));
+  } catch (e) {
+    console.error('[orders:export] erreur', e);
+    res.status(500).send('Erreur export CSV');
   }
 });
 
@@ -2350,11 +2932,29 @@ app.get('/api/admin/orders/:id', authenticateAdmin, ensureAdminOrAgent, async (r
   }
 });
 
+// Ajouter une note interne sur une commande
+app.post('/api/admin/orders/:id/notes', authenticateAdmin, ensureAdminOrAgent, async (req, res) => {
+  try {
+    const order = await Order.findById(req.params.id);
+    if (!order) return res.status(404).json({ success: false, message: 'Commande non trouvée' });
+    const msg = (req.body && typeof req.body.message === 'string') ? req.body.message.trim() : '';
+    if (!msg) return res.status(400).json({ success: false, message: 'Note vide' });
+    order.events = order.events || [];
+    const by = (req.auth && (req.auth.email || req.auth.username)) || 'admin';
+    order.events.push({ type: 'note', message: msg, at: new Date(), payloadSnippet: { by } });
+    await order.save();
+    res.json({ success: true, order });
+  } catch (e) {
+    console.error('[orders:add-note] erreur', e);
+    res.status(500).json({ success: false, message: 'Erreur serveur' });
+  }
+});
+
 // Créer une commande (brouillon) pour générer ensuite un lien de paiement Mollie
 app.post('/api/admin/orders', authenticateAdmin, ensureAdminOrAgent, async (req, res) => {
   try {
     const body = req.body || {};
-    const provider = body.provider && typeof body.provider === 'string' ? body.provider : 'mollie';
+    const provider = body.provider && typeof body.provider === 'string' ? body.provider : 'manual';
     const number = body.number && String(body.number).trim() !== '' ? String(body.number).trim() : undefined;
     const customer = body.customer && typeof body.customer === 'object' ? body.customer : {};
     const totals = body.totals && typeof body.totals === 'object' ? body.totals : { currency: 'EUR', amount: 0 };
@@ -2383,6 +2983,79 @@ app.post('/api/admin/orders', authenticateAdmin, ensureAdminOrAgent, async (req,
       })),
       events: [{ type: 'order_created_admin', message: 'Commande créée par admin' }]
     });
+
+    // Adresse de facturation éventuelle
+    if (body.billing && typeof body.billing === 'object' && body.billing.address && typeof body.billing.address === 'object') {
+      order.billing = order.billing || {};
+      order.billing.address = body.billing.address;
+    }
+
+    // Adresse de livraison éventuelle
+    if (body.shipping && typeof body.shipping === 'object' && body.shipping.address && typeof body.shipping.address === 'object') {
+      order.shipping = order.shipping || {};
+      order.shipping.address = body.shipping.address;
+    }
+
+    // Livraison estimée éventuelle (création)
+    if (body.shipping && typeof body.shipping === 'object' && typeof body.shipping.estimatedDeliveryAt === 'string') {
+      const s = body.shipping.estimatedDeliveryAt.trim();
+      if (s) {
+        const iso = /^\d{4}-\d{2}-\d{2}$/.test(s) ? `${s}T00:00:00.000Z` : s;
+        const d = new Date(iso);
+        if (!isNaN(d.getTime())) {
+          order.shipping = order.shipping || {};
+          order.shipping.estimatedDeliveryAt = d;
+          order.events = order.events || [];
+          order.events.push({ type: 'estimated_delivery_set', message: `Livraison estimée: ${d.toISOString().slice(0,10)}` });
+        }
+      }
+    }
+
+    // VIN / Plaque saisi à la création
+    if (body.meta && typeof body.meta === 'object' && typeof body.meta.vinOrPlate === 'string' && body.meta.vinOrPlate.trim()) {
+      order.meta = order.meta || {};
+      order.meta.vinOrPlate = body.meta.vinOrPlate.trim();
+    }
+
+    // Références techniques à la création
+    if (body.meta && typeof body.meta === 'object') {
+      order.meta = order.meta || {};
+      if (typeof body.meta.engineDisplacement === 'string') {
+        order.meta.engineDisplacement = body.meta.engineDisplacement.trim();
+      }
+      if (typeof body.meta.tcuReference === 'string') {
+        order.meta.tcuReference = body.meta.tcuReference.trim().toUpperCase();
+      }
+      if (typeof body.meta.technicalRefRequired === 'boolean') {
+        order.meta.technicalRefRequired = !!body.meta.technicalRefRequired;
+      }
+      if (order.meta.engineDisplacement || order.meta.tcuReference || order.meta.technicalRefRequired) {
+        order.events = order.events || [];
+        order.events.push({ type: 'technical_ref_initialized', message: 'Référence technique initialisée' });
+      }
+    }
+
+    // Détection auto méca/TCU pour toutes les créations (manuelles ou autres)
+    try {
+      const autoFlag = detectTechRefFromItems(order.items || []);
+      const alreadySet = !!(order.meta && typeof order.meta.technicalRefRequired === 'boolean');
+      if (autoFlag && !alreadySet) {
+        order.meta = order.meta || {};
+        order.meta.technicalRefRequired = true;
+        order.events = order.events || [];
+        order.events.push({ type: 'technical_ref_required_set', message: 'Référence technique requise (auto)' });
+      }
+    } catch {}
+
+    // Marquer payée immédiatement (virement)
+    if (body.markPaid) {
+      order.status = 'paid';
+      order.payment = order.payment || {};
+      order.payment.method = 'bank_transfer';
+      order.payment.paidAt = new Date();
+      order.events.push({ type: 'mark_paid_bank_transfer', message: 'Marquée payée (virement) lors de la création' });
+    }
+
     await order.save();
     res.json({ success: true, order });
   } catch (e) {
@@ -2410,48 +3083,16 @@ app.post('/api/admin/orders/:id/mark-paid', authenticateAdmin, ensureAdminOrAgen
   }
 });
 
-// Créer un lien de paiement Mollie pour une commande
+// Créer un lien de paiement (fonctionnalité non disponible dans cette version)
 app.post('/api/admin/orders/:id/payment-link', authenticateAdmin, ensureAdminOrAgent, async (req, res) => {
   try {
-    const order = await Order.findById(req.params.id);
+    const id = req.params.id;
+    const order = await Order.findById(id).lean();
     if (!order) return res.status(404).json({ success: false, message: 'Commande non trouvée' });
-
-    // Créer un paiement Mollie via l'API HTTP
-    const currency = (order.totals && order.totals.currency) || 'EUR';
-    const amount = (order.totals && order.totals.amount) || 0;
-    const successUrl = process.env.PAYMENT_SUCCESS_URL || `${WEBSITE_URL}/paiement/succes`;
-    const cancelUrl = process.env.PAYMENT_CANCEL_URL || `${WEBSITE_URL}/paiement/annule`;
-    const webhookToken = process.env.MOLLIE_WEBHOOK_TOKEN || '';
-    const webhookUrl = `${WEBSITE_URL.replace(/\/$/, '')}/api/webhooks/mollie/${encodeURIComponent(webhookToken)}`;
-
-    const description = `Commande ${order.number || order._id.toString()}`;
-    const payment = await mollieCreatePayment({
-      amount: { currency, value: toAmountString(amount) },
-      description,
-      redirectUrl: successUrl,
-      cancelUrl: cancelUrl,
-      webhookUrl: webhookUrl,
-      metadata: {
-        orderId: order._id.toString(),
-        number: order.number || ''
-      }
-    });
-
-    order.payment = order.payment || {};
-    order.payment.method = `mollie:${payment.method || 'link'}`;
-    order.payment.molliePaymentId = payment.id;
-    order.payment.mollieMode = payment.mode;
-    order.payment.mollieStatus = payment.status;
-    order.status = mapMollieStatusToInternal(payment.status);
-    order.events = order.events || [];
-    order.events.push({ type: 'mollie_payment_created', message: 'Lien de paiement créé', payloadSnippet: { id: payment.id, status: payment.status } });
-    await order.save();
-
-    const checkoutUrl = payment?._links?.checkout?.href || null;
-    return res.json({ success: true, paymentId: payment.id, checkoutUrl });
+    return res.status(501).json({ success: false, message: 'Lien de paiement non disponible' });
   } catch (e) {
     console.error('[orders:payment-link] erreur', e);
-    res.status(500).json({ success: false, message: 'Erreur serveur' });
+    return res.status(500).json({ success: false, message: 'Erreur serveur' });
   }
 });
 
@@ -2459,10 +3100,10 @@ app.post('/api/admin/orders/:id/payment-link', authenticateAdmin, ensureAdminOrA
 app.post('/api/admin/orders/sync-now', authenticateAdmin, ensureAdminOrAgent, async (req, res) => {
   try {
     await runOrdersSync();
-    res.json({ success: true });
+    return res.json({ success: true });
   } catch (e) {
     console.error('[orders:sync-now] erreur', e);
-    res.status(500).json({ success: false, message: 'Erreur lors de la synchronisation' });
+    return res.status(500).json({ success: false, message: 'Erreur lors de la synchronisation' });
   }
 });
 
@@ -2476,6 +3117,71 @@ app.post('/api/admin/orders/sync-woo-all', authenticateAdmin, ensureAdminOrAgent
     res.status(500).json({ success: false, message: e.message || 'Erreur lors de la synchro complète Woo' });
   }
 });
+
+function ppFormatDate(d) {
+  const pad = (n) => String(n).padStart(2, '0');
+  const Y = d.getUTCFullYear();
+  const M = pad(d.getUTCMonth() + 1);
+  const D = pad(d.getUTCDate());
+  const h = pad(d.getUTCHours());
+  const m = pad(d.getUTCMinutes());
+  const s = pad(d.getUTCSeconds());
+  return `${Y}-${M}-${D} ${h}:${m}:${s}`;
+}
+
+function mapCarrierToParcelPanelCode(carrier) {
+  const c = String(carrier || '').trim().toLowerCase();
+  const map = {
+    'colissimo': 'colissimo',
+    'la poste': 'laposte',
+    'laposte': 'laposte',
+    'chronopost': 'chronopost',
+    'mondial relay': 'mondialrelay',
+    'mondialrelay': 'mondialrelay',
+    'dhl': 'dhl',
+    'ups': 'ups',
+    'gls': 'gls',
+    'dpd': 'dpd',
+    'tnt': 'tnt',
+    'fedex': 'fedex'
+  };
+  // tenter correspondance partielle
+  for (const k of Object.keys(map)) {
+    if (c.includes(k)) return map[k];
+  }
+  return c || 'other';
+}
+
+async function pushTrackingToParcelPanel({ wooOrderId, trackingNumber, carrier, shippedAt, lineItems }) {
+  const apiKey = (process.env.PARCELPANEL_API_KEY || '').trim();
+  if (!apiKey) return { attempted: false, ok: false, message: 'PARCELPANEL_API_KEY manquant' };
+  try {
+    const courier_code = mapCarrierToParcelPanelCode(carrier);
+    const body = {
+      shipments: [
+        {
+          order_id: wooOrderId,
+          tracking_number: trackingNumber,
+          courier_code,
+          date_shipped: ppFormatDate(shippedAt || new Date()),
+          status_shipped: 1,
+          ...(Array.isArray(lineItems) && lineItems.length > 0 ? { line_items: lineItems.map(li => ({ sku: li.sku || '', qty: li.qty || 0 })) } : {})
+        }
+      ]
+    };
+    const resp = await fetch('https://wp-api.parcelpanel.com/api/v1/tracking/create', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'PP-Api-Key': apiKey },
+      body: JSON.stringify(body)
+    });
+    const json = await resp.json().catch(() => ({}));
+    if (!resp.ok) return { attempted: true, ok: false, message: `HTTP ${resp.status}`, raw: json };
+    const ok = json && (json.code === 200) && json.data && json.data.success && json.data.success.length > 0;
+    return { attempted: true, ok: !!ok, message: ok ? 'OK' : (json && json.msg) || 'Echec API', raw: json };
+  } catch (e) {
+    return { attempted: true, ok: false, message: e.message || 'Erreur inconnue' };
+  }
+}
 
 // Renseigner l'expédition et marquer comme expédiée
 app.post('/api/admin/orders/:id/ship', authenticateAdmin, ensureAdminOrAgent, async (req, res) => {
@@ -2492,7 +3198,25 @@ app.post('/api/admin/orders/:id/ship', authenticateAdmin, ensureAdminOrAgent, as
     order.events = order.events || [];
     order.events.push({ type: 'order_shipped', message: 'Commande expédiée', payloadSnippet: { carrier: order.shipping.carrier, trackingNumber: order.shipping.trackingNumber } });
     await order.save();
-    res.json({ success: true, order });
+
+    // Si commande Woo et API ParcelPanel disponible, pousser le suivi
+    let parcelPanel = { attempted: false, ok: false };
+    try {
+      if (order.provider === 'woocommerce' && order.providerOrderId) {
+        parcelPanel = await pushTrackingToParcelPanel({
+          wooOrderId: String(order.providerOrderId),
+          trackingNumber: order.shipping.trackingNumber,
+          carrier: order.shipping.carrier,
+          shippedAt: order.shipping.shippedAt,
+          lineItems: Array.isArray(order.items) ? order.items : []
+        });
+        if (!parcelPanel.ok) console.warn('[orders:ship] ParcelPanel push non OK:', parcelPanel.message);
+      }
+    } catch (e) {
+      console.warn('[orders:ship] ParcelPanel push erreur', e);
+    }
+
+    res.json({ success: true, order, parcelPanel });
   } catch (e) {
     console.error('[orders:ship] erreur', e);
     res.status(500).json({ success: false, message: 'Erreur serveur' });

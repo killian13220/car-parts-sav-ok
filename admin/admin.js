@@ -18,6 +18,284 @@
         }
     }
 
+    // Modale d'édition de commande (client + adresses)
+    function openEditOrderModal(orderId) {
+        if (!authToken) return logout();
+        const root = ensureModalRoot();
+        root.style.display = 'flex';
+        root.innerHTML = '';
+        const modal = document.createElement('div');
+        modal.className = 'cpf-modal';
+        modal.style.maxWidth = '1024px';
+        modal.style.width = '95vw';
+        modal.style.maxHeight = '90vh';
+        modal.style.display = 'flex';
+        modal.style.flexDirection = 'column';
+        modal.innerHTML = `
+          <div class="cpf-modal-header">
+            <div class="icon"><i class="fas fa-pen"></i></div>
+            <div class="cpf-modal-title">Modifier la commande</div>
+          </div>
+          <div class="cpf-modal-body co-order-modal-body">
+            <style>
+              .co-order-modal-body { flex: 1; overflow: auto; padding-right: 4px; }
+              .co-grid-2 { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+              .co-section { margin-top:10px; }
+              .co-section h4 { margin:6px 0; font-size:14px; }
+              .co-inline { display:flex; align-items:center; gap:8px; }
+              .co-field { display:flex; flex-direction:column; gap:4px; }
+              .co-field label { font-size:12px; color:#374151; }
+              .co-field input, .co-field select { height:36px; border:1px solid #d1d5db; border-radius:8px; padding:6px 10px; }
+              .co-field input:focus, .co-field select:focus { outline:none; border-color:#93c5fd; box-shadow:0 0 0 3px rgba(59,130,246,0.15); }
+              .quick-date { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+              .quick-date .qd, .quick-date .qd-clear { background:#f9fafb; border:1px solid #d1d5db; border-radius:8px; height:32px; padding:0 8px; cursor:pointer; }
+              @media (max-width: 640px) { .co-grid-2 { grid-template-columns: 1fr; } }
+            </style>
+            <div class="co-section">
+              <h4>Coordonnées de facturation</h4>
+              <div class="co-grid-2">
+                <div class="co-field"><label for="ed-bill-name">Nom complet</label><input id="ed-bill-name" type="text" /></div>
+                <div class="co-field"><label for="ed-bill-company">Société (optionnel)</label><input id="ed-bill-company" type="text" /></div>
+                <div class="co-field"><label for="ed-bill-email">Email</label><input id="ed-bill-email" type="email" /></div>
+                <div class="co-field"><label for="ed-bill-phone">Téléphone</label><input id="ed-bill-phone" type="text" /></div>
+                <div class="co-field"><label for="ed-bill-address1">Adresse 1</label><input id="ed-bill-address1" type="text" /></div>
+                <div class="co-field"><label for="ed-bill-address2">Adresse 2</label><input id="ed-bill-address2" type="text" /></div>
+                <div class="co-field"><label for="ed-bill-city">Ville</label><input id="ed-bill-city" type="text" /></div>
+                <div class="co-field"><label for="ed-bill-postcode">Code postal</label><input id="ed-bill-postcode" type="text" /></div>
+                <div class="co-field"><label for="ed-bill-country">Pays</label><input id="ed-bill-country" type="text" /></div>
+              </div>
+            </div>
+            <div class="co-section">
+              <h4>Adresse de livraison</h4>
+              <div class="co-inline" style="margin-bottom:6px;">
+                <input id="ed-ship-same" type="checkbox" />
+                <label for="ed-ship-same">Identique à la facturation</label>
+              </div>
+              <div class="co-grid-2" id="ed-ship-grid">
+                <div class="co-field"><label for="ed-ship-name">Nom complet</label><input id="ed-ship-name" type="text" /></div>
+                <div class="co-field"><label for="ed-ship-company">Société (optionnel)</label><input id="ed-ship-company" type="text" /></div>
+                <div class="co-field"><label for="ed-ship-phone">Téléphone</label><input id="ed-ship-phone" type="text" /></div>
+                <div class="co-field"><label for="ed-ship-address1">Adresse 1</label><input id="ed-ship-address1" type="text" /></div>
+                <div class="co-field"><label for="ed-ship-address2">Adresse 2</label><input id="ed-ship-address2" type="text" /></div>
+                <div class="co-field"><label for="ed-ship-city">Ville</label><input id="ed-ship-city" type="text" /></div>
+                <div class="co-field"><label for="ed-ship-postcode">Code postal</label><input id="ed-ship-postcode" type="text" /></div>
+                <div class="co-field"><label for="ed-ship-country">Pays</label><input id="ed-ship-country" type="text" /></div>
+              </div>
+              <div class="co-field" style="margin-top:6px;">
+                <label for="ed-estimated">Livraison estimée (optionnel)</label>
+                <div class="co-inline">
+                  <input id="ed-estimated" type="date" />
+                  <div class="quick-date">
+                    <button type="button" class="qd" data-add="0">Aujourd’hui</button>
+                    <button type="button" class="qd" data-add="1">+1 j</button>
+                    <button type="button" class="qd" data-add="3">+3 j</button>
+                    <button type="button" class="qd" data-add="5">+5 j</button>
+                    <button type="button" class="qd" data-add="7">+7 j</button>
+                    <button type="button" class="qd-clear">Effacer</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="co-section">
+              <div class="co-field" style="margin-top:6px;">
+                <label for="co-estimated">Livraison estimée (optionnel)</label>
+                <input id="co-estimated" type="date" />
+              </div>
+            </div>
+            <div class="co-section">
+              <h4>Référence technique</h4>
+              <div class="co-grid-2">
+                <div class="co-field"><label for="co-engine">Cylindrée moteur</label><input id="co-engine" type="text" placeholder="Ex: 1.4" /></div>
+                <div class="co-field"><label for="co-tcu">Référence TCU</label><input id="co-tcu" type="text" placeholder="Ex: 0AM927769D" /></div>
+              </div>
+              <div class="co-inline" style="margin-top:6px;">
+                <input id="co-tech-req" type="checkbox" />
+                <label for="co-tech-req">Référence requise</label>
+              </div>
+            </div>
+            <div class="co-section">
+              <h4>Véhicule</h4>
+              <div class="co-grid-2">
+                <div class="co-field"><label for="co-vin">VIN / Plaque (optionnel)</label><input id="co-vin" type="text" placeholder="Ex: VF3XXXXXXXXXXXXXX ou AB-123-CD" /></div>
+              </div>
+            </div>
+            <div class="co-section">
+              <h4>Référence technique</h4>
+              <div class="co-grid-2">
+                <div class="co-field"><label for="ed-engine">Cylindrée moteur</label><input id="ed-engine" type="text" placeholder="Ex: 1.4" /></div>
+                <div class="co-field"><label for="ed-tcu">Référence TCU</label><input id="ed-tcu" type="text" placeholder="Ex: 0AM927769D" /></div>
+              </div>
+              <div class="co-inline" style="margin-top:6px;">
+                <input id="ed-tech-req" type="checkbox" />
+                <label for="ed-tech-req">Référence requise</label>
+              </div>
+            </div>
+            <div id="ed-error" class="login-error" style="display:none;"></div>
+          </div>
+          <div class="cpf-modal-actions">
+            <button class="cpf-btn" data-action="cancel">Annuler</button>
+            <button class="cpf-btn cpf-btn-primary" data-action="confirm">Enregistrer</button>
+          </div>
+        `;
+        const onCleanup = () => { root.style.display = 'none'; root.innerHTML=''; root.removeEventListener('click', onOverlayClick); };
+        const onOverlayClick = (e) => { if (e.target === root) onCleanup(); };
+        root.addEventListener('click', onOverlayClick);
+        root.appendChild(modal);
+
+        const errEl = modal.querySelector('#ed-error');
+        const vinEl = modal.querySelector('#ed-vin');
+        const estEl = modal.querySelector('#ed-estimated');
+        const edEngineEl = modal.querySelector('#ed-engine');
+        const edTcuEl = modal.querySelector('#ed-tcu');
+        const edReqEl = modal.querySelector('#ed-tech-req');
+        // Boutons rapides (édition)
+        try {
+          const setByOffset = (input, days) => {
+            if (!input) return;
+            const d = new Date(); d.setHours(0,0,0,0); d.setDate(d.getDate() + days);
+            input.value = d.toISOString().slice(0,10);
+          };
+          modal.querySelectorAll('.quick-date .qd').forEach(btn => {
+            btn.addEventListener('click', () => {
+              const add = parseInt(btn.dataset.add || '0', 10) || 0;
+              setByOffset(estEl, add);
+            });
+          });
+          const clearBtn = modal.querySelector('.quick-date .qd-clear');
+          if (clearBtn) clearBtn.addEventListener('click', () => { if (estEl) estEl.value = ''; });
+        } catch {}
+        const shipSame = modal.querySelector('#ed-ship-same');
+        const bill = {
+            name: modal.querySelector('#ed-bill-name'), company: modal.querySelector('#ed-bill-company'),
+            email: modal.querySelector('#ed-bill-email'), phone: modal.querySelector('#ed-bill-phone'),
+            address1: modal.querySelector('#ed-bill-address1'), address2: modal.querySelector('#ed-bill-address2'),
+            city: modal.querySelector('#ed-bill-city'), postcode: modal.querySelector('#ed-bill-postcode'), country: modal.querySelector('#ed-bill-country')
+        };
+        const ship = {
+            name: modal.querySelector('#ed-ship-name'), company: modal.querySelector('#ed-ship-company'), phone: modal.querySelector('#ed-ship-phone'),
+            address1: modal.querySelector('#ed-ship-address1'), address2: modal.querySelector('#ed-ship-address2'),
+            city: modal.querySelector('#ed-ship-city'), postcode: modal.querySelector('#ed-ship-postcode'), country: modal.querySelector('#ed-ship-country')
+        };
+        function copyBillToShipEd() { Object.keys(ship).forEach(k => { if (bill[k]) ship[k].value = bill[k].value || ''; }); }
+        function setShipDisabledEd(disabled) { Object.values(ship).forEach(el => { el.disabled = disabled; el.closest('.co-field').style.opacity = disabled ? 0.6 : 1; }); }
+
+        // Pré-remplir depuis la commande
+        fetch(`/api/admin/orders/${encodeURIComponent(orderId)}`, { headers: { 'Authorization': `Basic ${authToken}` } })
+          .then(r => r.json()).then(d => {
+            if (!d || !d.success || !d.order) return;
+            const o = d.order;
+            // Billing/customer
+            bill.name.value = (o.customer?.name || o.billing?.address?.name || '')
+            bill.company.value = (o.billing?.address?.company || '')
+            bill.email.value = (o.customer?.email || '')
+            bill.phone.value = (o.customer?.phone || '')
+            bill.address1.value = (o.billing?.address?.address1 || '')
+            bill.address2.value = (o.billing?.address?.address2 || '')
+            bill.city.value = (o.billing?.address?.city || '')
+            bill.postcode.value = (o.billing?.address?.postcode || '')
+            bill.country.value = (o.billing?.address?.country || '')
+            // VIN / Plaque
+            if (vinEl) vinEl.value = (o.meta && o.meta.vinOrPlate) ? String(o.meta.vinOrPlate) : '';
+            // Référence technique
+            try {
+              if (edEngineEl) edEngineEl.value = (o.meta && o.meta.engineDisplacement) ? String(o.meta.engineDisplacement) : '';
+              if (edTcuEl) edTcuEl.value = (o.meta && o.meta.tcuReference) ? String(o.meta.tcuReference) : '';
+              if (edReqEl) edReqEl.checked = !!(o.meta && o.meta.technicalRefRequired);
+            } catch {}
+            // Livraison estimée
+            try {
+              if (estEl && o.shipping && o.shipping.estimatedDeliveryAt) {
+                const d = new Date(o.shipping.estimatedDeliveryAt);
+                if (!isNaN(d.getTime())) estEl.value = d.toISOString().slice(0,10);
+              }
+            } catch {}
+            // Shipping
+            const same = !o.shipping?.address || (
+              (o.shipping.address.address1||'') === (o.billing?.address?.address1||'') &&
+              (o.shipping.address.city||'') === (o.billing?.address?.city||'') &&
+              (o.shipping.address.postcode||'') === (o.billing?.address?.postcode||'') &&
+              (o.shipping.address.country||'') === (o.billing?.address?.country||'')
+            );
+            shipSame.checked = same;
+            if (same) {
+              copyBillToShipEd();
+              setShipDisabledEd(true);
+            } else {
+              ship.name.value = (o.shipping?.address?.name || o.customer?.name || '')
+              ship.company.value = (o.shipping?.address?.company || '')
+              ship.phone.value = (o.shipping?.address?.phone || '')
+              ship.address1.value = (o.shipping?.address?.address1 || '')
+              ship.address2.value = (o.shipping?.address?.address2 || '')
+              ship.city.value = (o.shipping?.address?.city || '')
+              ship.postcode.value = (o.shipping?.address?.postcode || '')
+              ship.country.value = (o.shipping?.address?.country || '')
+              setShipDisabledEd(false);
+            }
+          }).catch(() => {});
+
+        if (shipSame) {
+          shipSame.addEventListener('change', () => {
+            const same = !!shipSame.checked;
+            if (same) copyBillToShipEd();
+            setShipDisabledEd(same);
+          });
+          Object.values(bill).forEach(el => el.addEventListener('input', () => { if (shipSame.checked) copyBillToShipEd(); }));
+        }
+
+        const cancelBtn = modal.querySelector('[data-action="cancel"]');
+        const confirmBtn = modal.querySelector('[data-action="confirm"]');
+        cancelBtn.addEventListener('click', onCleanup);
+        confirmBtn.addEventListener('click', async () => {
+          try {
+            errEl.style.display = 'none'; errEl.textContent = '';
+            const emailVal = (bill.email?.value || '').trim();
+            if (!emailVal) { errEl.textContent = 'Email client requis'; errEl.style.display = 'block'; return; }
+            confirmBtn.disabled = true; confirmBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Enregistrement…';
+            const payload = {
+              customer: { name: (bill.name?.value || '').trim(), email: emailVal, phone: (bill.phone?.value || '').trim() },
+              billing: { address: {
+                name: (bill.name?.value || '').trim(), company: (bill.company?.value || '').trim(),
+                address1: (bill.address1?.value || '').trim(), address2: (bill.address2?.value || '').trim(),
+                city: (bill.city?.value || '').trim(), postcode: (bill.postcode?.value || '').trim(), country: (bill.country?.value || '').trim()
+              } },
+              shipping: { address: {
+                name: (ship.name?.value || '').trim(), company: (ship.company?.value || '').trim(), phone: (ship.phone?.value || '').trim(),
+                address1: (ship.address1?.value || '').trim(), address2: (ship.address2?.value || '').trim(),
+                city: (ship.city?.value || '').trim(), postcode: (ship.postcode?.value || '').trim(), country: (ship.country?.value || '').trim()
+              } },
+              meta: { vinOrPlate: (vinEl?.value || '').trim() }
+            };
+            // Ajouter la date estimée si fournie
+            const estVal = (estEl?.value || '').trim();
+            if (estVal) payload.shipping.estimatedDeliveryAt = estVal;
+            // Ajouter Référence technique
+            const engVal = (edEngineEl?.value || '').trim();
+            const tcuVal = (edTcuEl?.value || '').trim();
+            const reqVal = !!(edReqEl?.checked);
+            payload.meta = payload.meta || {};
+            payload.meta.engineDisplacement = engVal;
+            payload.meta.tcuReference = tcuVal;
+            payload.meta.technicalRefRequired = reqVal;
+            const r = await fetch(`/api/admin/orders/${encodeURIComponent(orderId)}`, {
+              method: 'PUT',
+              headers: { 'Authorization': `Basic ${authToken}`, 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload)
+            });
+            const d = await r.json().catch(() => ({}));
+            if (!r.ok || !d.success) throw new Error(d.message || 'Échec de la mise à jour');
+            onCleanup();
+            showToast('Commande mise à jour', 'success');
+            await loadOrdersList(1);
+            try { if (d.order && d.order._id) setTimeout(() => openOrderDetails(d.order._id), 150); } catch(_) {}
+          } catch (e) {
+            errEl.textContent = e.message || 'Erreur de mise à jour';
+            errEl.style.display = 'block';
+          } finally {
+            confirmBtn.disabled = false; confirmBtn.innerHTML = 'Enregistrer';
+          }
+        });
+    }
+
     // ================= Notifications (In‑app) =================
     let notifPollIntervalId = null;
     let lastRenderedNotifIds = new Set();
@@ -2237,41 +2515,37 @@ async function checkAuth() {
         const refreshBtn = document.getElementById('orders-refresh-btn');
         const syncBtn = document.getElementById('orders-sync-btn');
         const syncWooAllBtn = document.getElementById('orders-sync-woo-all-btn');
+        const rebuildTechBtn = document.getElementById('orders-rebuild-techref-btn');
         const searchInput = document.getElementById('orders-search-input');
         const providerSel = document.getElementById('orders-provider-filter');
         const statusSel = document.getElementById('orders-status-filter');
+        const fromInput = document.getElementById('orders-from');
+        const toInput = document.getElementById('orders-to');
+        const sortSel = document.getElementById('orders-sort');
+        const exportBtn = document.getElementById('orders-export-btn');
         const tbody = document.getElementById('orders-list');
         
-        if (createBtn) createBtn.addEventListener('click', async () => {
+        if (createBtn) createBtn.addEventListener('click', () => openCreateOrderModal());
+        if (refreshBtn) refreshBtn.addEventListener('click', () => loadOrdersList(1));
+        const missingRefCbx = document.getElementById('orders-missing-techref');
+        if (missingRefCbx) missingRefCbx.addEventListener('change', () => loadOrdersList(1));
+        if (rebuildTechBtn) rebuildTechBtn.addEventListener('click', async () => {
             if (!authToken) return logout();
             try {
-                const number = prompt('Numéro de commande (facultatif):', '');
-                const email = prompt('Email client:', '');
-                if (!email) return;
-                const name = prompt('Nom client (optionnel):', '');
-                const amountStr = prompt('Montant (ex: 49.90):', '49.90');
-                const amount = parseFloat(amountStr || '0');
-                const payload = {
-                    provider: 'mollie',
-                    number: number || undefined,
-                    customer: { name: name || '', email },
-                    totals: { currency: 'EUR', amount },
-                    items: []
-                };
-                const res = await fetch('/api/admin/orders', {
-                    method: 'POST',
-                    headers: { 'Authorization': `Basic ${authToken}`, 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                });
-                const data = await res.json().catch(() => ({}));
-                if (!res.ok || !data.success) throw new Error(data.message || 'Création impossible');
-                showToast('Commande créée', 'success');
+                rebuildTechBtn.disabled = true;
+                rebuildTechBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Recalcul…';
+                const r = await fetch('/api/admin/orders/rebuild-technical-refs', { method: 'POST', headers: { 'Authorization': `Basic ${authToken}` } });
+                const d = await r.json().catch(() => ({}));
+                if (!r.ok || !d.success) throw new Error(d.message || 'Échec du recalcul');
+                showToast(`Références recalculées: ${d.updated} mise(s) à jour sur ${d.scanned} commande(s)`, 'success');
                 await loadOrdersList(1);
             } catch (e) {
-                showToast(e.message || 'Erreur lors de la création', 'error');
+                showToast(e.message || 'Erreur lors du recalcul', 'error');
+            } finally {
+                rebuildTechBtn.disabled = false;
+                rebuildTechBtn.innerHTML = '<i class="fas fa-wrench"></i> Recalculer Réf techniques';
             }
         });
-        if (refreshBtn) refreshBtn.addEventListener('click', () => loadOrdersList(1));
         if (syncBtn) syncBtn.addEventListener('click', async () => {
             if (!authToken) return logout();
             try {
@@ -2295,6 +2569,10 @@ async function checkAuth() {
         if (searchInput) searchInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') loadOrdersList(1); });
         if (providerSel) providerSel.addEventListener('change', () => loadOrdersList(1));
         if (statusSel) statusSel.addEventListener('change', () => loadOrdersList(1));
+        if (fromInput) fromInput.addEventListener('change', () => loadOrdersList(1));
+        if (toInput) toInput.addEventListener('change', () => loadOrdersList(1));
+        if (sortSel) sortSel.addEventListener('change', () => loadOrdersList(1));
+        if (exportBtn) exportBtn.addEventListener('click', () => exportOrdersCsv());
         if (syncWooAllBtn) syncWooAllBtn.addEventListener('click', async () => {
             if (!authToken) return logout();
             const ok = confirm('Importer toutes les commandes WooCommerce ? Cela peut prendre plusieurs minutes.');
@@ -2319,39 +2597,19 @@ async function checkAuth() {
         });
         if (tbody) tbody.addEventListener('click', async (e) => {
             const btn = e.target.closest('button[data-action]');
-            if (!btn) return;
+            if (!btn) {
+                // Si clic sur une ligne (hors boutons), ouvrir détails
+                const row = e.target.closest('tr.order-row');
+                if (row && row.dataset.id) {
+                    openOrderDetails(row.dataset.id);
+                }
+                return;
+            }
             const id = btn.dataset.id;
             const action = btn.dataset.action;
             if (!id || !action) return;
             try {
-                if (action === 'payment-link') {
-                    const r = await fetch(`/api/admin/orders/${encodeURIComponent(id)}/payment-link`, {
-                        method: 'POST',
-                        headers: { 'Authorization': `Basic ${authToken}` }
-                    });
-                    const d = await r.json().catch(() => ({}));
-                    if (!r.ok || !d.success) throw new Error(d.message || 'Erreur création lien');
-                    if (d.checkoutUrl) window.open(d.checkoutUrl, '_blank', 'noopener');
-                    showToast('Lien de paiement créé', 'success');
-                    // Aide au test local: proposer de simuler le webhook Mollie après paiement
-                    try {
-                        const host = window.location.hostname;
-                        const isLocal = host === 'localhost' || host === '127.0.0.1';
-                        if (isLocal && d.paymentId) {
-                            const ok = confirm('Après avoir finalisé le paiement dans l\'onglet ouvert, cliquez sur OK pour SIMULER le webhook Mollie en local.');
-                            if (ok) {
-                                const respW = await fetch('/api/webhooks/mollie/local-test-123', {
-                                    method: 'POST',
-                                    headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({ id: d.paymentId })
-                                });
-                                await respW.json().catch(() => ({}));
-                                await loadOrdersList(1);
-                                showToast('Webhook simulé (local). Statut mis à jour.', 'success');
-                            }
-                        }
-                    } catch(_) {}
-                } else if (action === 'mark-paid') {
+                if (action === 'mark-paid') {
                     const r = await fetch(`/api/admin/orders/${encodeURIComponent(id)}/mark-paid`, {
                         method: 'POST',
                         headers: { 'Authorization': `Basic ${authToken}` }
@@ -2361,17 +2619,168 @@ async function checkAuth() {
                     showToast('Commande marquée payée', 'success');
                     await loadOrdersList(1);
                 } else if (action === 'ship') {
-                    const carrier = prompt('Transporteur:', '');
-                    const trackingNumber = prompt('N° de suivi:', '');
-                    const r = await fetch(`/api/admin/orders/${encodeURIComponent(id)}/ship`, {
-                        method: 'POST',
-                        headers: { 'Authorization': `Basic ${authToken}`, 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ carrier, trackingNumber })
+                    openShipModal(id);
+                } else if (action === 'edit') {
+                    openEditOrderModal(id);
+                } else if (action === 'delete') {
+                    const ok = window.confirm('Supprimer définitivement cette commande ?');
+                    if (!ok) return;
+                    let prevHtml = btn.innerHTML;
+                    try {
+                        btn.disabled = true;
+                        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+                        const r = await fetch(`/api/admin/orders/${encodeURIComponent(id)}`, {
+                            method: 'DELETE',
+                            headers: { 'Authorization': `Basic ${authToken}` }
+                        });
+                        const d = await r.json().catch(() => ({}));
+                        if (!r.ok || !d.success) {
+                            if (r.status === 403) throw new Error('Accès refusé: suppression réservée aux administrateurs');
+                            throw new Error(d.message || 'Suppression impossible');
+                        }
+                        showToast('Commande supprimée', 'success');
+                        await loadOrdersList(1);
+                    } catch (err) {
+                        showToast(err.message || 'Erreur lors de la suppression', 'error');
+                    } finally {
+                        btn.disabled = false;
+                        btn.innerHTML = prevHtml || "<i class='fas fa-trash'></i>";
+                    }
+                } else if (action === 'ref-mini') {
+                    // Fermer tout popover existant
+                    try { document.querySelectorAll('.mini-pop').forEach(p => p.remove()); } catch {}
+                    const popover = document.createElement('div');
+                    popover.className = 'mini-pop';
+                    popover.innerHTML = `
+                      <div class="row" style="width:100%">
+                        <input type="text" id="ref-engine" placeholder="Cylindrée (ex: 1.4)" style="flex:1 1 auto; min-width:120px; height:32px; border:1px solid #d1d5db; border-radius:8px; padding:4px 8px;" />
+                        <input type="text" id="ref-tcu" placeholder="Réf TCU (ex: 0AM927769D)" style="flex:1 1 auto; min-width:160px; height:32px; border:1px solid #d1d5db; border-radius:8px; padding:4px 8px;" />
+                      </div>
+                      <div class="row" style="width:100%">
+                        <label style="display:inline-flex; align-items:center; gap:6px; font-size:12px; color:#374151;">
+                          <input type="checkbox" id="ref-required" /> Référence requise
+                        </label>
+                        <span style="flex:1 1 auto;"></span>
+                        <button class="qd qd-clear" data-act="clear">Effacer refs</button>
+                        <button class="ok" data-act="ok">OK</button>
+                      </div>
+                    `;
+                    const rect = btn.getBoundingClientRect();
+                    document.body.appendChild(popover);
+                    const popRect = popover.getBoundingClientRect();
+                    const vw = document.documentElement.clientWidth;
+                    const vh = document.documentElement.clientHeight;
+                    let left = window.scrollX + rect.left;
+                    if (left + popRect.width > window.scrollX + vw - 8) left = window.scrollX + rect.right - popRect.width;
+                    if (left < window.scrollX + 8) left = window.scrollX + 8;
+                    let top = window.scrollY + rect.top + rect.height + 6;
+                    if (top + popRect.height > window.scrollY + vh - 8) top = window.scrollY + rect.top - popRect.height - 6;
+                    if (top < window.scrollY + 8) top = window.scrollY + 8;
+                    popover.style.left = `${left}px`;
+                    popover.style.top = `${top}px`;
+                    const engEl = popover.querySelector('#ref-engine');
+                    const tcuEl = popover.querySelector('#ref-tcu');
+                    const reqEl = popover.querySelector('#ref-required');
+                    if (engEl) engEl.value = btn.dataset.engine || '';
+                    if (tcuEl) tcuEl.value = btn.dataset.tcu || '';
+                    if (reqEl) reqEl.checked = (btn.dataset.required === '1');
+                    const cleanup = () => { try { popover.remove(); document.removeEventListener('mousedown', onDocClick); document.removeEventListener('keydown', onKey); } catch {} };
+                    const onDocClick = (ev) => { if (!popover.contains(ev.target) && ev.target !== btn) cleanup(); };
+                    const onKey = (ev) => { if (ev.key === 'Escape') cleanup(); if (ev.key === 'Enter') doSave(); };
+                    document.addEventListener('mousedown', onDocClick);
+                    document.addEventListener('keydown', onKey);
+                    const doSave = async () => {
+                        const payload = {
+                            engineDisplacement: (engEl?.value || '').trim(),
+                            tcuReference: (tcuEl?.value || '').trim(),
+                            technicalRefRequired: !!(reqEl?.checked)
+                        };
+                        await updateTechnicalRef(id, payload);
+                        cleanup();
+                    };
+                    popover.querySelector('[data-act="ok"]').addEventListener('click', doSave);
+                    popover.querySelector('[data-act="clear"]').addEventListener('click', async () => {
+                        if (engEl) engEl.value = '';
+                        if (tcuEl) tcuEl.value = '';
+                        await updateTechnicalRef(id, { engineDisplacement: '', tcuReference: '', technicalRefRequired: !!(reqEl?.checked) });
+                        cleanup();
                     });
-                    const d = await r.json().catch(() => ({}));
-                    if (!r.ok || !d.success) throw new Error(d.message || 'Échec expédition');
-                    showToast('Commande expédiée', 'success');
-                    await loadOrdersList(1);
+                } else if (action === 'est-mini') {
+                    // Fermer tout popover existant
+                    try { document.querySelectorAll('.mini-pop').forEach(p => p.remove()); } catch {}
+                    const popover = document.createElement('div');
+                    popover.className = 'mini-pop';
+                    popover.innerHTML = `
+                      <div class="row">
+                        <button class="qd" data-est="0">Aujourd'hui</button>
+                        <button class="qd" data-est="1">+1 j</button>
+                        <button class="qd" data-est="3">+3 j</button>
+                        <button class="qd" data-est="5">+5 j</button>
+                        <button class="qd" data-est="7">+7 j</button>
+                      </div>
+                      <div class="row">
+                        <input type="date" id="est-date" value="" />
+                      </div>
+                      <div class="row">
+                        <button class="qd qd-clear" data-est="clear">Effacer</button>
+                        <button class="ok" data-est="ok">OK</button>
+                      </div>
+                    `;
+                    const rect = btn.getBoundingClientRect();
+                    // Ajouter d'abord, puis mesurer pour éviter les débordements
+                    document.body.appendChild(popover);
+                    const popRect = popover.getBoundingClientRect();
+                    const vw = document.documentElement.clientWidth;
+                    const vh = document.documentElement.clientHeight;
+                    let left = window.scrollX + rect.left;
+                    // Si dépasse à droite, aligner sur la droite du bouton
+                    if (left + popRect.width > window.scrollX + vw - 8) {
+                        left = window.scrollX + rect.right - popRect.width;
+                    }
+                    // Clamp sur la gauche
+                    if (left < window.scrollX + 8) left = window.scrollX + 8;
+                    let top = window.scrollY + rect.top + rect.height + 6; // par défaut, en dessous
+                    // Si dépasse en bas, afficher au-dessus
+                    if (top + popRect.height > window.scrollY + vh - 8) {
+                        top = window.scrollY + rect.top - popRect.height - 6;
+                    }
+                    // Clamp haut
+                    if (top < window.scrollY + 8) top = window.scrollY + 8;
+                    popover.style.left = `${left}px`;
+                    popover.style.top = `${top}px`;
+                    const input = popover.querySelector('#est-date');
+                    const today = new Date();
+                    input.value = today.toISOString().slice(0,10);
+                    const cleanup = () => { try { popover.remove(); document.removeEventListener('mousedown', onDocClick); document.removeEventListener('keydown', onKey); } catch {} };
+                    const onDocClick = (ev) => { if (!popover.contains(ev.target) && ev.target !== btn) cleanup(); };
+                    const onKey = (ev) => { if (ev.key === 'Escape') cleanup(); };
+                    document.addEventListener('mousedown', onDocClick);
+                    document.addEventListener('keydown', onKey);
+                    popover.querySelectorAll('.qd').forEach(qd => {
+                        qd.addEventListener('click', () => {
+                            const est = qd.dataset.est;
+                            if (est === 'clear') { input.value = ''; return; }
+                            const days = parseInt(est || '0', 10) || 0;
+                            const d = new Date(); d.setHours(0,0,0,0); d.setDate(d.getDate() + days);
+                            input.value = d.toISOString().slice(0,10);
+                        });
+                    });
+                    popover.querySelector('.ok').addEventListener('click', async () => {
+                        const val = (input.value || '').trim();
+                        if (!val) { await updateEstimatedDelivery(id, ''); cleanup(); return; }
+                        const iso = `${val}T00:00:00.000Z`;
+                        await updateEstimatedDelivery(id, iso);
+                        cleanup();
+                    });
+                    input.addEventListener('keydown', async (ev) => {
+                        if (ev.key === 'Enter') {
+                            const val = (input.value || '').trim();
+                            if (!val) { await updateEstimatedDelivery(id, ''); cleanup(); return; }
+                            const iso = `${val}T00:00:00.000Z`;
+                            await updateEstimatedDelivery(id, iso);
+                            cleanup();
+                        }
+                    });
                 }
             } catch (e2) {
                 showToast(e2.message || 'Erreur action', 'error');
@@ -2387,6 +2796,9 @@ async function checkAuth() {
             const q = (document.getElementById('orders-search-input')?.value || '').trim();
             const provider = (document.getElementById('orders-provider-filter')?.value || '').trim();
             const status = (document.getElementById('orders-status-filter')?.value || '').trim();
+            const from = (document.getElementById('orders-from')?.value || '').trim();
+            const to = (document.getElementById('orders-to')?.value || '').trim();
+            const sortVal = (document.getElementById('orders-sort')?.value || 'date_desc');
             if (tbody) tbody.innerHTML = '<tr><td colspan="8">Chargement…</td></tr>';
             const params = new URLSearchParams();
             params.set('page', String(page));
@@ -2394,6 +2806,13 @@ async function checkAuth() {
             if (q) params.set('q', q);
             if (provider) params.set('provider', provider);
             if (status) params.set('status', status);
+            if (from) params.set('from', from);
+            if (to) params.set('to', to);
+            const missingRefCbx = document.getElementById('orders-missing-techref');
+            if (missingRefCbx && missingRefCbx.checked) params.set('missingTechRef', '1');
+            const [sort, dir] = parseSort(sortVal);
+            if (sort) params.set('sort', sort);
+            if (dir) params.set('dir', dir);
             const res = await fetch(`/api/admin/orders?${params.toString()}`, { headers: { 'Authorization': `Basic ${authToken}` } });
             const data = await res.json().catch(() => ({}));
             if (!res.ok || !data.success) throw new Error(data.message || 'Erreur chargement');
@@ -2434,39 +2853,102 @@ async function checkAuth() {
             tbody.innerHTML = '<tr><td colspan="8">Aucune commande</td></tr>';
             return;
         }
+        // Styles compacts pour le mini-popover (injectés une seule fois)
+        try {
+            if (!document.getElementById('mini-est-styles')) {
+                const st = document.createElement('style');
+                st.id = 'mini-est-styles';
+                st.textContent = `
+                  .btn-icon { padding: 0 8px; min-width: 32px; }
+                  .mini-pop { position: absolute; z-index: 9999; background:#fff; border:1px solid #e5e7eb; border-radius:8px; box-shadow:0 4px 18px rgba(0,0,0,0.08); padding:8px; width: 240px; max-width: calc(100vw - 16px); }
+                  .mini-pop .row { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+                  .mini-pop input[type=date] { height:32px; border:1px solid #d1d5db; border-radius:8px; padding:4px 8px; flex:1 1 auto; }
+                  .mini-pop .qd { background:#f9fafb; border:1px solid #d1d5db; border-radius:6px; height:28px; padding:0 8px; cursor:pointer; font-size:12px; }
+                  .mini-pop .qd-clear { background:#fff5f5; border:1px solid #fecaca; color:#b91c1c; }
+                  .mini-pop .ok { height:28px; padding:0 10px; border-radius:6px; border:1px solid #d1d5db; background:#eef2ff; }
+                  .ref-dot { width:10px; height:10px; border-radius:50%; border:1px solid #e5e7eb; display:inline-block; margin: auto 2px; }
+                  .ref-dot.ok { background:#10b981; }
+                  .ref-dot.missing { background:#ef4444; }
+                `;
+                document.head.appendChild(st);
+            }
+        } catch {}
         const frag = document.createDocumentFragment();
         orders.forEach(o => {
             const tr = document.createElement('tr');
             const num = o.number || (o.provider ? (o.provider + '#' + String(o._id || '').slice(-6)) : (String(o._id || '').slice(-6)));
-            const created = o.createdAt ? new Date(o.createdAt).toLocaleString('fr-FR') : '';
-            const updated = o.updatedAt ? new Date(o.updatedAt).toLocaleString('fr-FR') : '';
+            const srcCreated = (o.meta && o.meta.sourceCreatedAt) ? o.meta.sourceCreatedAt : o.createdAt;
+            const srcUpdated = (o.meta && o.meta.sourceUpdatedAt) ? o.meta.sourceUpdatedAt : o.updatedAt;
+            const created = srcCreated ? new Date(srcCreated).toLocaleString('fr-FR') : '';
+            const updated = srcUpdated ? new Date(srcUpdated).toLocaleString('fr-FR') : '';
             const client = (o.customer && (o.customer.name || o.customer.email)) ? `${o.customer.name || ''} ${o.customer.email ? `<small>${o.customer.email}</small>` : ''}` : '—';
             const src = o.provider || '—';
-            const st = o.status || '—';
+            const st = renderStatusBadge(o.status || '—');
             const amt = formatMoney((o.totals && o.totals.amount) || 0, (o.totals && o.totals.currency) || 'EUR');
-            
             const actions = document.createElement('div');
             actions.style.display = 'flex';
             actions.style.gap = '6px';
-            const btnPay = document.createElement('button');
-            btnPay.className = 'btn-secondary';
-            btnPay.textContent = 'Lien paiement';
-            btnPay.dataset.action = 'payment-link';
-            btnPay.dataset.id = o._id;
             const btnPaid = document.createElement('button');
             btnPaid.className = 'btn-secondary';
             btnPaid.textContent = 'Marquer payé';
             btnPaid.dataset.action = 'mark-paid';
             btnPaid.dataset.id = o._id;
+            const btnEdit = document.createElement('button');
+            btnEdit.className = 'btn-secondary';
+            btnEdit.textContent = 'Modifier';
+            btnEdit.dataset.action = 'edit';
+            btnEdit.dataset.id = o._id;
             const btnShip = document.createElement('button');
             btnShip.className = 'btn-secondary';
             btnShip.textContent = 'Expédier';
             btnShip.dataset.action = 'ship';
             btnShip.dataset.id = o._id;
-            actions.appendChild(btnPay);
+            // Pastille état Réf technique (si requise)
+            const techReq = !!(o.meta && o.meta.technicalRefRequired);
+            const engine = (o.meta && o.meta.engineDisplacement ? String(o.meta.engineDisplacement).trim() : '');
+            const tcu = (o.meta && o.meta.tcuReference ? String(o.meta.tcuReference).trim() : '');
+            const techMissing = techReq && (!engine || !tcu);
+            let dot = null;
+            if (techReq) {
+                dot = document.createElement('span');
+                dot.className = 'ref-dot ' + (techMissing ? 'missing' : 'ok');
+                dot.title = techMissing ? 'Réf manquante' : 'Réf OK';
+            }
+            // Bouton Réf (mini-popover)
+            const btnRef = document.createElement('button');
+            btnRef.className = 'btn-secondary btn-icon';
+            btnRef.innerHTML = "<i class='fas fa-key'></i>";
+            btnRef.title = 'Référence technique';
+            btnRef.dataset.action = 'ref-mini';
+            btnRef.dataset.id = o._id;
+            btnRef.dataset.engine = engine;
+            btnRef.dataset.tcu = tcu;
+            btnRef.dataset.required = techReq ? '1' : '0';
+            const btnEst = document.createElement('button');
+            btnEst.className = 'btn-secondary btn-icon';
+            btnEst.innerHTML = "<i class='fas fa-calendar-plus'></i>";
+            btnEst.dataset.action = 'est-mini';
+            btnEst.dataset.id = o._id;
+            const btnDel = document.createElement('button');
+            btnDel.className = 'btn-secondary btn-icon';
+            btnDel.innerHTML = "<i class='fas fa-trash'></i>";
+            btnDel.title = 'Supprimer';
+            btnDel.dataset.action = 'delete';
+            btnDel.dataset.id = o._id;
+            try {
+                if (o.shipping && o.shipping.estimatedDeliveryAt) {
+                    btnEst.title = 'Livraison estimée: ' + new Date(o.shipping.estimatedDeliveryAt).toLocaleDateString('fr-FR');
+                } else {
+                    btnEst.title = 'Définir livraison estimée';
+                }
+            } catch { btnEst.title = 'Définir livraison estimée'; }
             actions.appendChild(btnPaid);
+            actions.appendChild(btnEdit);
             actions.appendChild(btnShip);
-
+            if (dot) actions.appendChild(dot);
+            actions.appendChild(btnRef);
+            actions.appendChild(btnEst);
+            actions.appendChild(btnDel);
             tr.innerHTML = `
                 <td>${num}</td>
                 <td>${created}</td>
@@ -2480,12 +2962,890 @@ async function checkAuth() {
             const tdActions = tr.querySelector('td:last-child');
             tdActions.appendChild(actions);
             tr.classList.add('order-row');
+            tr.dataset.id = o._id;
             frag.appendChild(tr);
         });
         tbody.innerHTML = '';
         tbody.appendChild(frag);
     }
+
+    function parseSort(val) {
+        switch (val) {
+            case 'date_desc': return ['date', 'desc'];
+            case 'date_asc': return ['date', 'asc'];
+            case 'amount_desc': return ['amount', 'desc'];
+            case 'amount_asc': return ['amount', 'asc'];
+            case 'number_desc': return ['number', 'desc'];
+            case 'number_asc': return ['number', 'asc'];
+            case 'status_asc': return ['status', 'asc'];
+            case 'status_desc': return ['status', 'desc'];
+            default: return ['date', 'desc'];
+        }
+    }
+
+    async function updateEstimatedDelivery(orderId, isoOrEmpty) {
+        if (!authToken) return logout();
+        try {
+            // normaliser: si ISO fourni, on n'envoie que YYYY-MM-DD pour simplifier
+            let payloadVal = '';
+            if (typeof isoOrEmpty === 'string') {
+                if (isoOrEmpty === '') payloadVal = '';
+                else payloadVal = (isoOrEmpty.length >= 10) ? isoOrEmpty.slice(0,10) : isoOrEmpty;
+            }
+            const r = await fetch(`/api/admin/orders/${encodeURIComponent(orderId)}`, {
+                method: 'PUT',
+                headers: { 'Authorization': `Basic ${authToken}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ shipping: { estimatedDeliveryAt: payloadVal } })
+            });
+            const d = await r.json().catch(() => ({}));
+            if (!r.ok || !d.success) throw new Error(d.message || 'Échec mise à jour livraison estimée');
+            showToast('Livraison estimée mise à jour', 'success');
+            await loadOrdersList(1);
+        } catch (e) {
+            showToast(e.message || 'Erreur', 'error');
+        }
+    }
+
+    async function updateTechnicalRef(orderId, fields) {
+        if (!authToken) return logout();
+        try {
+            const payload = { meta: {} };
+            if (typeof fields.engineDisplacement === 'string') payload.meta.engineDisplacement = fields.engineDisplacement;
+            if (typeof fields.tcuReference === 'string') payload.meta.tcuReference = fields.tcuReference;
+            if (typeof fields.technicalRefRequired === 'boolean') payload.meta.technicalRefRequired = fields.technicalRefRequired;
+            const r = await fetch(`/api/admin/orders/${encodeURIComponent(orderId)}`, {
+                method: 'PUT',
+                headers: { 'Authorization': `Basic ${authToken}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const d = await r.json().catch(() => ({}));
+            if (!r.ok || !d.success) throw new Error(d.message || 'Échec mise à jour référence technique');
+            showToast('Référence technique mise à jour', 'success');
+            await loadOrdersList(1);
+        } catch (e) {
+            showToast(e.message || 'Erreur', 'error');
+        }
+    }
+
+    function exportOrdersCsv() {
+        if (!authToken) return logout();
+        const q = (document.getElementById('orders-search-input')?.value || '').trim();
+        const provider = (document.getElementById('orders-provider-filter')?.value || '').trim();
+        const status = (document.getElementById('orders-status-filter')?.value || '').trim();
+        const from = (document.getElementById('orders-from')?.value || '').trim();
+        const to = (document.getElementById('orders-to')?.value || '').trim();
+        const sortVal = (document.getElementById('orders-sort')?.value || 'date_desc');
+        const params = new URLSearchParams();
+        if (q) params.set('q', q);
+        if (provider) params.set('provider', provider);
+        if (status) params.set('status', status);
+        if (from) params.set('from', from);
+        if (to) params.set('to', to);
+        const [sort, dir] = parseSort(sortVal);
+        if (sort) params.set('sort', sort);
+        if (dir) params.set('dir', dir);
+        // Utiliser un téléchargement direct (les credentials ne sont pas nécessaires car Authorization Basic est requis; on ouvre dans le même domaine, donc le navigateur enverra l'en-tête? Non pour Basic manuel) -> on génère un fetch blob pour inclure l'auth.
+        fetch(`/api/admin/orders/export.csv?${params.toString()}`, { headers: { 'Authorization': `Basic ${authToken}` } })
+            .then(r => r.blob())
+            .then(blob => {
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'orders-export.csv';
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                URL.revokeObjectURL(url);
+            })
+            .catch(() => showToast('Erreur export CSV', 'error'));
+    }
+
+    function renderStatusBadge(status) {
+        const s = String(status || '').toLowerCase();
+        const styles = {
+            'pending_payment': 'background:#fef3c7;color:#92400e;border:1px solid #fcd34d;',
+            'awaiting_transfer': 'background:#fef3c7;color:#92400e;border:1px solid #fcd34d;',
+            'pending': 'background:#fef3c7;color:#92400e;border:1px solid #fcd34d;',
+            'on-hold': 'background:#fef3c7;color:#92400e;border:1px solid #fcd34d;',
+            'paid': 'background:#dcfce7;color:#166534;border:1px solid #86efac;',
+            'processing': 'background:#e0f2fe;color:#075985;border:1px solid #7dd3fc;',
+            'completed': 'background:#e9d5ff;color:#6b21a8;border:1px solid #d8b4fe;',
+            'fulfilled': 'background:#e9d5ff;color:#6b21a8;border:1px solid #d8b4fe;',
+            'cancelled': 'background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;',
+            'failed': 'background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;',
+            'refunded': 'background:#f1f5f9;color:#334155;border:1px solid #cbd5e1;',
+            'disputed': 'background:#fde68a;color:#92400e;border:1px solid #fcd34d;',
+            'draft': 'background:#f1f5f9;color:#334155;border:1px solid #cbd5e1;'
+        };
+        const labelMap = {
+            'pending_payment': 'En attente de paiement',
+            'awaiting_transfer': 'En attente virement',
+            'pending': 'En attente',
+            'on-hold': 'En attente',
+            'paid': 'Payée',
+            'processing': 'En traitement',
+            'completed': 'Terminée',
+            'fulfilled': 'Expédiée',
+            'cancelled': 'Annulée',
+            'failed': 'Échec',
+            'refunded': 'Remboursée',
+            'disputed': 'Litige',
+            'draft': 'Brouillon'
+        };
+        const style = styles[s] || 'background:#f1f5f9;color:#334155;border:1px solid #cbd5e1;';
+        const label = labelMap[s] || (status || '—').toString();
+        return `<span style="display:inline-block;padding:2px 6px;border-radius:12px;font-size:12px;${style}">${label}</span>`;
+    }
+
+    function openOrderDetails(id) {
+        if (!authToken) return logout();
+        const panel = document.getElementById('order-details-panel');
+        const content = document.getElementById('order-details-content');
+        const btnClose = document.getElementById('order-details-close');
+        if (!panel || !content) return;
+        panel.style.display = 'block';
+        content.innerHTML = '<div>Chargement…</div>';
+        if (btnClose) btnClose.onclick = () => { panel.style.display = 'none'; content.innerHTML = ''; };
+        fetch(`/api/admin/orders/${encodeURIComponent(id)}`, { headers: { 'Authorization': `Basic ${authToken}` } })
+            .then(r => r.json())
+            .then(d => {
+                if (!d || !d.success || !d.order) throw new Error('Introuvable');
+                const o = d.order;
+                const num = o.number || id;
+                const srcCreated = (o.meta && o.meta.sourceCreatedAt) ? o.meta.sourceCreatedAt : o.createdAt;
+                const srcUpdated = (o.meta && o.meta.sourceUpdatedAt) ? o.meta.sourceUpdatedAt : o.updatedAt;
+                const created = srcCreated ? new Date(srcCreated).toLocaleString('fr-FR') : '';
+                const updated = srcUpdated ? new Date(srcUpdated).toLocaleString('fr-FR') : '';
+                const st = renderStatusBadge(o.status || '—');
+                const amt = formatMoney((o.totals && o.totals.amount) || 0, (o.totals && o.totals.currency) || 'EUR');
+                const cust = o.customer || {};
+                const ship = o.shipping || {};
+                const items = Array.isArray(o.items) ? o.items : [];
+                const events = Array.isArray(o.events) ? o.events : [];
+                const pay = o.payment || {};
+                const vinStr = (o.meta && o.meta.vinOrPlate) ? String(o.meta.vinOrPlate) : '';
+                const shipment = `
+                  <div class="od-grid-2">
+                    <div class="od-field"><div class="od-label">Transporteur</div><div class="od-value">${ship.carrier || '—'}</div></div>
+                    <div class="od-field"><div class="od-label">N° de suivi</div><div class="od-value">${ship.trackingNumber ? `<span>${ship.trackingNumber}</span> <button class="od-copy" data-copy="${ship.trackingNumber}"><i class='fas fa-copy'></i></button>` : '—'}</div></div>
+                    <div class="od-field"><div class="od-label">Expédiée le</div><div class="od-value">${ship.shippedAt ? new Date(ship.shippedAt).toLocaleString('fr-FR') : '—'}</div></div>
+                    <div class="od-field"><div class="od-label">Livraison estimée</div><div class="od-value">${o.shipping?.estimatedDeliveryAt ? new Date(o.shipping.estimatedDeliveryAt).toLocaleDateString('fr-FR') : '—'}</div></div>
+                  </div>`;
+                const esc = (s) => String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+                const stripTags = (s) => String(s || '').replace(/<[^>]*>/g, '');
+                const itemsHtml = items.length ? `
+                    <div class="od-table-wrap">
+                      <table class="od-table">
+                        <colgroup>
+                          <col style="width: 18%; max-width: 180px;">
+                          <col style="width: auto;">
+                          <col style="width: 10%; min-width: 70px;">
+                          <col style="width: 14%; min-width: 110px;">
+                        </colgroup>
+                        <thead><tr><th>SKU</th><th>Article</th><th style="text-align:right;">Qté</th><th style="text-align:right;">PU</th></tr></thead>
+                        <tbody>
+                          ${items.map(it => {
+                            const nameText = stripTags(it.name || '');
+                            return `<tr>
+                              <td>${it.sku || ''}</td>
+                              <td class="od-name" title="${esc(nameText)}">${esc(nameText)}</td>
+                              <td style="text-align:right;">${it.qty || 0}</td>
+                              <td style="text-align:right;">${formatMoney(it.unitPrice || 0, o.totals?.currency || 'EUR')}</td>
+                            </tr>`;
+                          }).join('')}
+                        </tbody>
+                      </table>
+                    </div>` : '<div>Aucun article</div>';
+                const eventsHtml = events.length ? `
+                    <ul class="od-events">
+                      ${events.slice().reverse().map(ev => `<li>
+                        <div class="od-event-time">${ev.at ? new Date(ev.at).toLocaleString('fr-FR') : ''}</div>
+                        <div class="od-event-line"><strong>${ev.type || ''}</strong> — ${ev.message || ''}</div>
+                      </li>`).join('')}
+                    </ul>` : '<div>Aucun événement</div>';
+                const notes = events.filter(ev => (ev && ev.type === 'note'));
+                const notesHtml = notes.length ? `
+                    <div class="od-notes-list">
+                      ${notes.slice().reverse().map(n => `
+                        <div class="od-note">
+                          <div class="od-note-head"><span>${esc(n?.payloadSnippet?.by || 'agent')}</span><span>${n.at ? new Date(n.at).toLocaleString('fr-FR') : ''}</span></div>
+                          <div class="od-note-body">${esc(n.message || '')}</div>
+                        </div>
+                      `).join('')}
+                    </div>
+                  ` : '<div class="co-help">Aucune note</div>';
+                const providerChip = o.provider ? `<span class="od-chip">${o.provider}</span>` : '';
+                content.innerHTML = `
+                  <style>
+                    .od-head { display:flex; align-items:flex-start; justify-content:space-between; gap:8px; flex-wrap: wrap; }
+                    .od-title { font-size:16px; font-weight:600; display:flex; align-items:center; gap:8px; }
+                    .od-meta { color:#6b7280; font-size:12px; }
+                    .od-chip { display:inline-block; padding:2px 8px; border-radius:999px; background:#f3f4f6; border:1px solid #e5e7eb; font-size:12px; color:#374151; }
+                    .od-head-right { display:flex; align-items:center; gap:10px; flex:1 1 420px; justify-content:flex-end; flex-wrap: wrap; }
+                    .od-actions { display:flex; gap:6px; flex-wrap: wrap; }
+                    .od-actions .btn-secondary { min-width: 140px; }
+                    .od-section { margin-top:10px; }
+                    .od-card { border:1px solid #e5e7eb; border-radius:10px; padding:10px; background:#fff; }
+                    .od-grid-2 { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+                    .od-field { display:flex; flex-direction:column; gap:2px; }
+                    .od-label { font-size:12px; color:#6b7280; }
+                    .od-value { font-size:14px; word-break: break-word; }
+                    .od-copy { background:#f9fafb; border:1px solid #e5e7eb; border-radius:6px; height:28px; padding:0 8px; margin-left:6px; cursor:pointer; }
+                    .od-addr { white-space:pre-line; }
+                    .od-table-wrap { overflow:auto; border:1px solid #e5e7eb; border-radius:10px; }
+                    .od-table { table-layout: auto; width: 100%; }
+                    .od-table thead th { background:#f9fafb; }
+                    .od-table td, .od-table th { white-space: normal; vertical-align: top; }
+                    .od-table .od-name { white-space: normal !important; display: block; overflow: visible !important; text-overflow: initial !important; overflow-wrap: anywhere; word-break: break-word; line-height: 1.35; }
+                    /* Override des styles globaux des colonnes 2 (ellipsis/nowrap) pour afficher tout le nom */
+                    .od-table td:nth-child(2),
+                    .od-table th:nth-child(2) {
+                      white-space: normal !important;
+                      overflow: visible !important;
+                      text-overflow: initial !important;
+                      word-break: break-word;
+                      width: auto !important;
+                      max-width: none !important;
+                      min-width: 220px;
+                    }
+                    .od-events { list-style:none; padding-left:0; margin:0; display:flex; flex-direction:column; gap:6px; }
+                    .od-event-time { font-size:12px; color:#6b7280; }
+                    .od-event-line { font-size:14px; }
+                    .od-notes-list { display:flex; flex-direction:column; gap:6px; margin-bottom:8px; }
+                    .od-note { background:#f9fafb; border:1px solid #e5e7eb; border-radius:8px; padding:8px; }
+                    .od-note-head { font-size:12px; color:#6b7280; display:flex; justify-content:space-between; gap:8px; }
+                    .od-note-body { font-size:14px; white-space:pre-wrap; }
+                    .od-note-form textarea { width:100%; min-height:64px; border:1px solid #d1d5db; border-radius:8px; padding:8px; }
+                    @media (max-width: 980px) { .od-head-right { flex:1 1 100%; justify-content:flex-start; } }
+                    @media (max-width: 720px) { .od-grid-2 { grid-template-columns: 1fr; } }
+                    @media (max-width: 600px) { .od-actions .btn-secondary { flex:1 1 100%; } }
+                  </style>
+                  <div>
+                    <div class="od-head">
+                      <div>
+                        <div class="od-title">Commande ${num} ${providerChip}</div>
+                        <div class="od-meta">Créée: ${created} · MAJ: ${updated}</div>
+                      </div>
+                      <div class="od-head-right" style="display:flex; align-items:center; gap:10px;">
+                        <div>${st}</div>
+                        <div class="od-actions">
+                          <button class="btn-secondary" id="od-edit"><i class="fas fa-pen"></i> Modifier</button>
+                          <button class="btn-secondary" id="od-paid"><i class="fas fa-euro-sign"></i> Marquer payé</button>
+                          <button class="btn-secondary" id="od-ship"><i class="fas fa-truck"></i> Expédier</button>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div class="od-section od-card">
+                      <div class="od-grid-2">
+                        <div class="od-field"><div class="od-label">Total</div><div class="od-value">${amt}</div></div>
+                        <div class="od-field"><div class="od-label">Source</div><div class="od-value">${o.provider || '—'}</div></div>
+                      </div>
+                    </div>
+
+                    <div class="od-section od-card">
+                      <h4 style="margin:0 0 8px 0;">Client</h4>
+                      <div class="od-grid-2">
+                        <div class="od-field"><div class="od-label">Nom</div><div class="od-value">${cust.name || '—'}</div></div>
+                        <div class="od-field"><div class="od-label">Email</div><div class="od-value">${cust.email ? `<a href="mailto:${cust.email}">${cust.email}</a> <button class='od-copy' data-copy='${cust.email}'><i class="fas fa-copy"></i></button>` : '—'}</div></div>
+                        <div class="od-field"><div class="od-label">Téléphone</div><div class="od-value">${cust.phone ? `<a href="tel:${cust.phone}">${cust.phone}</a>` : '—'}</div></div>
+                      </div>
+                    </div>
+
+                    <div class="od-section od-card">
+                      <h4 style="margin:0 0 8px 0;">Adresse de facturation</h4>
+                      <div class="od-grid-2">
+                        <div class="od-field"><div class="od-label">Nom</div><div class="od-value">${o.billing?.address?.name || cust.name || '—'}</div></div>
+                        <div class="od-field"><div class="od-label">Société</div><div class="od-value">${o.billing?.address?.company || '—'}</div></div>
+                        <div class="od-field od-addr"><div class="od-label">Adresse</div><div class="od-value">${[o.billing?.address?.address1, o.billing?.address?.address2, `${o.billing?.address?.postcode||''} ${o.billing?.address?.city||''}`.trim(), o.billing?.address?.country].filter(Boolean).join('\n') || '—'}</div></div>
+                      </div>
+                    </div>
+
+                    <div class="od-section od-card">
+                      <h4 style="margin:0 0 8px 0;">Adresse de livraison</h4>
+                      <div class="od-grid-2">
+                        <div class="od-field"><div class="od-label">Nom</div><div class="od-value">${o.shipping?.address?.name || cust.name || '—'}</div></div>
+                        <div class="od-field"><div class="od-label">Société</div><div class="od-value">${o.shipping?.address?.company || '—'}</div></div>
+                        <div class="od-field"><div class="od-label">Téléphone</div><div class="od-value">${o.shipping?.address?.phone || '—'}</div></div>
+                        <div class="od-field od-addr"><div class="od-label">Adresse</div><div class="od-value">${[o.shipping?.address?.address1, o.shipping?.address?.address2, `${o.shipping?.address?.postcode||''} ${o.shipping?.address?.city||''}`.trim(), o.shipping?.address?.country].filter(Boolean).join('\n') || '—'}</div></div>
+                      </div>
+                    </div>
+
+                    <div class="od-section od-card">
+                      <h4 style="margin:0 0 8px 0;">Paiement</h4>
+                      <div class="od-grid-2">
+                        <div class="od-field"><div class="od-label">Méthode</div><div class="od-value">${pay.method || '—'}</div></div>
+                        <div class="od-field"><div class="od-label">Payé le</div><div class="od-value">${pay.paidAt ? new Date(pay.paidAt).toLocaleString('fr-FR') : '—'}</div></div>
+                      </div>
+                    </div>
+
+                    <div class="od-section od-card">
+                      <h4 style="margin:0 0 8px 0;">Véhicule</h4>
+                      <div class="od-grid-2">
+                        <div class="od-field"><div class="od-label">VIN / Plaque</div><div class="od-value">${vinStr ? `${vinStr} <button class='od-copy' data-copy='${vinStr.replace(/'/g, "&#39;")}'><i class='fas fa-copy'></i></button>` : '—'}</div></div>
+                      </div>
+                    </div>
+
+                    <div class="od-section od-card">
+                      <h4 style="margin:0 0 8px 0;">Expédition</h4>
+                      ${shipment}
+                    </div>
+
+                    <div class="od-section od-card">
+                      <h4 style="margin:0 0 8px 0;">Notes internes</h4>
+                      ${notesHtml}
+                      <div class="od-note-form">
+                        <textarea id="od-note-text" placeholder="Écrire une note pour les autres agents…"></textarea>
+                        <div style="display:flex; align-items:center; gap:8px; margin-top:6px;">
+                          <button id="od-add-note" class="btn-secondary"><i class="fas fa-sticky-note"></i> Ajouter la note</button>
+                          <div id="od-note-error" class="login-error" style="display:none;"></div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div class="od-section od-card">
+                      <h4 style="margin:0 0 8px 0;">Articles</h4>
+                      ${itemsHtml}
+                    </div>
+
+                    <div class="od-section od-card">
+                      <h4 style="margin:0 0 8px 0;">Historique</h4>
+                      ${eventsHtml}
+                    </div>
+                  </div>`;
+                // Actions du header
+                try {
+                  const btnEdit2 = content.querySelector('#od-edit');
+                  const btnPaid2 = content.querySelector('#od-paid');
+                  const btnShip2 = content.querySelector('#od-ship');
+                  if (btnEdit2) btnEdit2.addEventListener('click', () => openEditOrderModal(id));
+                  if (btnShip2) btnShip2.addEventListener('click', () => openShipModal(id));
+                  if (btnPaid2) btnPaid2.addEventListener('click', async () => {
+                    try {
+                      btnPaid2.disabled = true; btnPaid2.innerHTML = '<i class="fas fa-spinner fa-spin"></i>...';
+                      const r = await fetch(`/api/admin/orders/${encodeURIComponent(id)}/mark-paid`, { method: 'POST', headers: { 'Authorization': `Basic ${authToken}` } });
+                      const d2 = await r.json().catch(() => ({}));
+                      if (!r.ok || !d2.success) throw new Error(d2.message || 'Échec marquage payé');
+                      showToast('Commande marquée payée', 'success');
+                      await loadOrdersList(1);
+                      setTimeout(() => openOrderDetails(id), 150);
+                    } catch(e3) {
+                      showToast(e3.message || 'Erreur', 'error');
+                    } finally {
+                      btnPaid2.disabled = false; btnPaid2.innerHTML = '<i class="fas fa-euro-sign"></i> Marquer payé';
+                    }
+                  });
+                } catch {}
+                // Copier dans le presse-papier
+                try {
+                  content.querySelectorAll('[data-copy]').forEach(el => {
+                    el.addEventListener('click', async () => {
+                      const v = el.getAttribute('data-copy') || '';
+                      try { await navigator.clipboard.writeText(v); showToast('Copié', 'success'); } catch {}
+                    });
+                  });
+                } catch {}
+                // Ajout de note interne
+                try {
+                  const addBtn = content.querySelector('#od-add-note');
+                  const noteInput = content.querySelector('#od-note-text');
+                  const noteErr = content.querySelector('#od-note-error');
+                  const doSubmit = async () => {
+                    if (!addBtn) return;
+                    try {
+                      noteErr.style.display = 'none'; noteErr.textContent = '';
+                      const msg = (noteInput?.value || '').trim();
+                      if (!msg) { noteErr.textContent = 'Veuillez écrire une note.'; noteErr.style.display = 'block'; return; }
+                      addBtn.disabled = true; addBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Ajout…';
+                      const r = await fetch(`/api/admin/orders/${encodeURIComponent(id)}/notes`, {
+                        method: 'POST', headers: { 'Authorization': `Basic ${authToken}`, 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ message: msg })
+                      });
+                      const d3 = await r.json().catch(() => ({}));
+                      if (!r.ok || !d3.success) throw new Error(d3.message || 'Échec ajout note');
+                      showToast('Note ajoutée', 'success');
+                      openOrderDetails(id);
+                    } catch (e4) {
+                      noteErr.textContent = e4.message || 'Erreur'; noteErr.style.display = 'block';
+                    } finally {
+                      addBtn.disabled = false; addBtn.innerHTML = '<i class="fas fa-sticky-note"></i> Ajouter la note';
+                    }
+                  };
+                  if (addBtn) addBtn.addEventListener('click', doSubmit);
+                  if (noteInput) noteInput.addEventListener('keydown', (e) => { if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') doSubmit(); });
+                } catch {}
+                //
+            })
+            .catch(() => { content.innerHTML = '<div class="login-error">Impossible de charger la commande</div>'; });
+    }
+
+    function openCreateOrderModal() {
+        if (!authToken) return logout();
+        const root = ensureModalRoot();
+        root.style.display = 'flex';
+        root.innerHTML = '';
+        const modal = document.createElement('div');
+        modal.className = 'cpf-modal';
+        modal.style.maxWidth = '1024px';
+        modal.style.width = '95vw';
+        modal.style.maxHeight = '90vh';
+        modal.style.display = 'flex';
+        modal.style.flexDirection = 'column';
+        modal.innerHTML = `
+          <div class="cpf-modal-header">
+            <div class="icon"><i class="fas fa-cart-plus"></i></div>
+            <div class="cpf-modal-title">Créer une commande</div>
+          </div>
+          <div class="cpf-modal-body co-order-modal-body">
+            <style>
+              .co-order-modal-body { flex: 1; overflow: auto; padding-right: 4px; }
+              .co-grid-2 { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+              .co-grid-3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; }
+              .co-section { margin-top:10px; }
+              .co-section h4 { margin:6px 0; font-size:14px; }
+              .co-inline { display:flex; align-items:center; gap:8px; }
+              .co-help { color:#6b7280; font-size:12px; }
+              .co-totals { background:#f9fafb; border:1px solid #e5e7eb; padding:8px; border-radius:8px; }
+              .co-totals .row { display:flex; justify-content:space-between; margin:2px 0; }
+              .co-table-wrap { overflow-x:auto; margin-top:6px; border:1px solid #e5e7eb; border-radius:8px; }
+              .tickets-table.co-table { min-width: 900px; width: 100%; }
+              #co-items input { height: 34px; }
+              #co-items .co-qty { width: 80px; text-align: right; }
+              #co-items .co-price { width: 120px; text-align: right; }
+              #co-items .co-name { min-width: 220px; }
+              #co-items .co-sku { min-width: 140px; }
+              .co-del { padding: 6px 10px; }
+              /* Styles champs */
+              .co-field { display:flex; flex-direction:column; gap:4px; }
+              .co-field label { font-size:12px; color:#374151; }
+              .co-field input, .co-field select { height:36px; border:1px solid #d1d5db; border-radius:8px; padding:6px 10px; }
+              .co-field input:focus, .co-field select:focus { outline:none; border-color:#93c5fd; box-shadow:0 0 0 3px rgba(59,130,246,0.15); }
+              @media (max-width: 640px) {
+                .co-grid-2 { grid-template-columns: 1fr; }
+                .tickets-table.co-table { min-width: 580px; }
+              }
+              @media (max-height: 700px) {
+                .co-grid-2 { gap:6px; }
+                .co-section { margin-top:6px; }
+                .co-totals { padding:6px; }
+              }
+              /* Garder la barre d'actions visible et lisible */
+              .cpf-modal .cpf-modal-actions { background:#fff; border-top:1px solid #e5e7eb; padding:10px 12px; }
+            </style>
+            <div class="co-grid-2">
+              <div>
+                <label>Numéro (optionnel)</label>
+                <input id="co-number" type="text" />
+              </div>
+              <div>
+                <label>Devise</label>
+                <input id="co-currency" type="text" value="EUR" />
+              </div>
+              <div>
+                <label>Source</label>
+                <select id="co-provider">
+                  <option value="manual">Manuelle</option>
+                  <option value="mollie">Mollie</option>
+                  <option value="bank_transfer">Virement</option>
+                </select>
+              </div>
+            </div>
+            <div class="co-section">
+              <h4>Adresse de facturation</h4>
+              <div class="co-grid-2">
+                <div class="co-field"><label for="co-bill-name">Nom complet</label><input id="co-bill-name" type="text" placeholder="Nom et prénom" /></div>
+                <div class="co-field"><label for="co-bill-company">Société (optionnel)</label><input id="co-bill-company" type="text" /></div>
+                <div class="co-field"><label for="co-bill-email">Email</label><input id="co-bill-email" type="email" placeholder="client@example.com" /></div>
+                <div class="co-field"><label for="co-bill-phone">Téléphone</label><input id="co-bill-phone" type="text" /></div>
+                <div class="co-field"><label for="co-bill-address1">Adresse 1</label><input id="co-bill-address1" type="text" placeholder="N°, rue" /></div>
+                <div class="co-field"><label for="co-bill-address2">Adresse 2</label><input id="co-bill-address2" type="text" placeholder="Complément" /></div>
+                <div class="co-field"><label for="co-bill-city">Ville</label><input id="co-bill-city" type="text" /></div>
+                <div class="co-field"><label for="co-bill-postcode">Code postal</label><input id="co-bill-postcode" type="text" /></div>
+                <div class="co-field"><label for="co-bill-country">Pays</label><input id="co-bill-country" type="text" value="FR" /></div>
+              </div>
+            </div>
+            <div class="co-section">
+              <h4>Adresse de livraison</h4>
+              <div class="co-inline" style="margin-bottom:6px;">
+                <input id="co-ship-same" type="checkbox" checked />
+                <label for="co-ship-same">Identique à la facturation</label>
+              </div>
+              <div class="co-grid-2" id="co-ship-grid">
+                <div class="co-field"><label for="co-ship-name">Nom complet</label><input id="co-ship-name" type="text" placeholder="Nom et prénom" /></div>
+                <div class="co-field"><label for="co-ship-company">Société (optionnel)</label><input id="co-ship-company" type="text" /></div>
+                <div class="co-field"><label for="co-ship-phone">Téléphone</label><input id="co-ship-phone" type="text" /></div>
+                <div class="co-field"><label for="co-ship-address1">Adresse 1</label><input id="co-ship-address1" type="text" placeholder="N°, rue" /></div>
+                <div class="co-field"><label for="co-ship-address2">Adresse 2</label><input id="co-ship-address2" type="text" placeholder="Complément" /></div>
+                <div class="co-field"><label for="co-ship-city">Ville</label><input id="co-ship-city" type="text" /></div>
+                <div class="co-field"><label for="co-ship-postcode">Code postal</label><input id="co-ship-postcode" type="text" /></div>
+                <div class="co-field"><label for="co-ship-country">Pays</label><input id="co-ship-country" type="text" value="FR" /></div>
+              </div>
+            </div>
+            <div class="co-section">
+              <h4>Véhicule</h4>
+              <div class="co-grid-2">
+                <div class="co-field"><label for="co-vin">VIN / Plaque (optionnel)</label><input id="co-vin" type="text" placeholder="Ex: VF3XXXXXXXXXXXXXX ou AB-123-CD" /></div>
+              </div>
+            </div>
+            <hr/>
+            <div>
+              <div style="display:flex; align-items:center; justify-content:space-between;">
+                <h4 style="margin:6px 0;">Articles</h4>
+                <button id="co-add-item" class="btn-secondary"><i class="fas fa-plus"></i> Ajouter</button>
+              </div>
+              <div class="co-table-wrap">
+                <table class="tickets-table co-table">
+                  <thead><tr><th>SKU</th><th>Libellé</th><th>Qté</th><th>Prix unitaire (€)</th><th></th></tr></thead>
+                  <tbody id="co-items"></tbody>
+                </table>
+              </div>
+              <div class="co-help">Renseigne au moins un article avec une quantité &gt; 0 et un prix unitaire &gt; 0.</div>
+            </div>
+            <div class="co-grid-2" style="margin-top:8px;">
+              <div>
+                <label>Frais de port</label>
+                <input id="co-shipping" type="number" step="0.01" value="0" />
+              </div>
+              <div>
+                <label>Taxes</label>
+                <input id="co-tax" type="number" step="0.01" value="0" />
+              </div>
+            </div>
+            <div class="co-totals" style="margin-top:8px;">
+              <div class="row"><span>Sous-total articles</span><span id="co-subtotal">0,00 €</span></div>
+              <div class="row"><span>Frais de port</span><span id="co-shipping-out">0,00 €</span></div>
+              <div class="row"><span>Taxes</span><span id="co-tax-out">0,00 €</span></div>
+              <div class="row" style="font-weight:600;"><span>Total</span><span id="co-total">0,00 €</span></div>
+            </div>
+            <div class="co-inline" style="margin-top:8px;">
+              <input id="co-mark-paid" type="checkbox" />
+              <label for="co-mark-paid">Marquer payée (virement)</label>
+            </div>
+            <div id="co-error" class="login-error" style="display:none;"></div>
+          </div>
+          <div class="cpf-modal-actions">
+            <button class="cpf-btn" data-action="cancel">Annuler</button>
+            <button class="cpf-btn cpf-btn-primary" data-action="confirm">Créer</button>
+          </div>
+        `;
+        const onCleanup = () => { root.style.display = 'none'; root.innerHTML=''; root.removeEventListener('click', onOverlayClick); };
+        const onOverlayClick = (e) => { if (e.target === root) onCleanup(); };
+        root.addEventListener('click', onOverlayClick);
+        root.appendChild(modal);
+
+        const itemsTbody = modal.querySelector('#co-items');
+        const addItemBtn = modal.querySelector('#co-add-item');
+        const subtotalEl = modal.querySelector('#co-subtotal');
+        const totalEl = modal.querySelector('#co-total');
+        const shipOutEl = modal.querySelector('#co-shipping-out');
+        const taxOutEl = modal.querySelector('#co-tax-out');
+        const errEl = modal.querySelector('#co-error');
+        const estEl = modal.querySelector('#co-estimated');
+        const engEl = modal.querySelector('#co-engine');
+        const tcuEl = modal.querySelector('#co-tcu');
+        const reqEl = modal.querySelector('#co-tech-req');
+        const vinEl = modal.querySelector('#co-vin');
+        const shipSameCbx = modal.querySelector('#co-ship-same');
+        const billFields = {
+            name: modal.querySelector('#co-bill-name'), company: modal.querySelector('#co-bill-company'), email: modal.querySelector('#co-bill-email'), phone: modal.querySelector('#co-bill-phone'),
+            address1: modal.querySelector('#co-bill-address1'), address2: modal.querySelector('#co-bill-address2'),
+            city: modal.querySelector('#co-bill-city'), postcode: modal.querySelector('#co-bill-postcode'), country: modal.querySelector('#co-bill-country')
+        };
+        const shipFields = {
+            name: modal.querySelector('#co-ship-name'), company: modal.querySelector('#co-ship-company'), phone: modal.querySelector('#co-ship-phone'),
+            address1: modal.querySelector('#co-ship-address1'), address2: modal.querySelector('#co-ship-address2'),
+            city: modal.querySelector('#co-ship-city'), postcode: modal.querySelector('#co-ship-postcode'), country: modal.querySelector('#co-ship-country')
+        };
+        function copyBillToShip() {
+            Object.keys(shipFields).forEach(k => { if (billFields[k]) shipFields[k].value = billFields[k]?.value || ''; });
+        }
+        function setShipDisabled(disabled) {
+            Object.values(shipFields).forEach(el => { el.disabled = disabled; el.closest('.co-field').style.opacity = disabled ? 0.6 : 1; });
+        }
+        if (shipSameCbx) {
+            setShipDisabled(true);
+            copyBillToShip();
+            shipSameCbx.addEventListener('change', () => {
+                const same = !!shipSameCbx.checked;
+                if (same) copyBillToShip();
+                setShipDisabled(same);
+            });
+            // si on modifie la facturation et que la case est cochée, répliquer
+            Object.values(billFields).forEach(el => el.addEventListener('input', () => { if (shipSameCbx.checked) copyBillToShip(); }));
+        }
+
+        function addItemRow(it = {}) {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+              <td><input type="text" class="co-sku" value="${it.sku || ''}"></td>
+              <td><input type="text" class="co-name" value="${it.name || ''}"></td>
+              <td><input type="number" class="co-qty" step="1" min="0" value="${it.qty || 1}"></td>
+              <td><input type="number" class="co-price" step="0.01" min="0" value="${it.unitPrice || 0}"></td>
+              <td><button class="btn-secondary co-del"><i class="fas fa-trash"></i></button></td>
+            `;
+            itemsTbody.appendChild(tr);
+        }
+        function computeTotal() {
+            const currency = (modal.querySelector('#co-currency')?.value || 'EUR').trim() || 'EUR';
+            const rows = itemsTbody.querySelectorAll('tr');
+            let itemsSum = 0;
+            rows.forEach(r => {
+                const q = parseFloat(r.querySelector('.co-qty')?.value || '0');
+                const p = parseFloat(r.querySelector('.co-price')?.value || '0');
+                itemsSum += (isNaN(q) ? 0 : q) * (isNaN(p) ? 0 : p);
+            });
+            const ship = parseFloat(modal.querySelector('#co-shipping')?.value || '0');
+            const tax = parseFloat(modal.querySelector('#co-tax')?.value || '0');
+            const shippingV = (isNaN(ship)?0:ship);
+            const taxV = (isNaN(tax)?0:tax);
+            const total = itemsSum + shippingV + taxV;
+            subtotalEl.textContent = formatMoney(itemsSum, currency);
+            shipOutEl.textContent = formatMoney(shippingV, currency);
+            taxOutEl.textContent = formatMoney(taxV, currency);
+            totalEl.textContent = formatMoney(total, currency);
+        }
+        addItemBtn.addEventListener('click', () => { addItemRow(); computeTotal(); });
+        itemsTbody.addEventListener('click', (e) => {
+            if (e.target.closest('.co-del')) {
+                const tr = e.target.closest('tr');
+                tr.parentNode.removeChild(tr);
+                computeTotal();
+            }
+        });
+        modal.addEventListener('input', (e) => {
+            if (e.target.matches('.co-qty, .co-price, #co-shipping, #co-tax, #co-currency')) computeTotal();
+        });
+        // préparer une ligne par défaut
+        addItemRow();
+        computeTotal();
+
+        const cancelBtn = modal.querySelector('[data-action="cancel"]');
+        const confirmBtn = modal.querySelector('[data-action="confirm"]');
+        cancelBtn.addEventListener('click', onCleanup);
+        confirmBtn.addEventListener('click', async () => {
+            try {
+                errEl.style.display = 'none'; errEl.textContent = '';
+                // Validation simple
+                const emailVal = (billFields.email?.value || '').trim();
+                const rows = itemsTbody.querySelectorAll('tr');
+                let hasItem = false;
+                rows.forEach(r => {
+                    const q = parseFloat(r.querySelector('.co-qty')?.value || '0') || 0;
+                    const p = parseFloat(r.querySelector('.co-price')?.value || '0') || 0;
+                    if (q > 0 && p > 0) hasItem = true;
+                });
+                const errors = [];
+                if (!emailVal) errors.push('Email client requis');
+                if (!hasItem) errors.push('Ajouter au moins un article avec quantité et prix > 0');
+                if (errors.length) {
+                    errEl.innerHTML = errors.map(e => `• ${e}`).join('<br/>');
+                    errEl.style.display = 'block';
+                    return;
+                }
+                const payload = {
+                    provider: (modal.querySelector('#co-provider')?.value || 'manual'),
+                    number: (modal.querySelector('#co-number')?.value || '').trim() || undefined,
+                    customer: {
+                        name: (billFields.name?.value || '').trim(),
+                        email: (billFields.email?.value || '').trim(),
+                        phone: (billFields.phone?.value || '').trim()
+                    },
+                    totals: {
+                        currency: (modal.querySelector('#co-currency')?.value || 'EUR').trim() || 'EUR',
+                        amount: 0,
+                        shipping: parseFloat(modal.querySelector('#co-shipping')?.value || '0') || 0,
+                        tax: parseFloat(modal.querySelector('#co-tax')?.value || '0') || 0
+                    },
+                    items: []
+                };
+                rows.forEach(r => {
+                    const sku = (r.querySelector('.co-sku')?.value || '').trim();
+                    const name = (r.querySelector('.co-name')?.value || '').trim();
+                    const qty = parseFloat(r.querySelector('.co-qty')?.value || '0') || 0;
+                    const unitPrice = parseFloat(r.querySelector('.co-price')?.value || '0') || 0;
+                    if (qty > 0 && (name || sku)) payload.items.push({ sku, name, qty, unitPrice });
+                    payload.totals.amount += qty * unitPrice;
+                });
+                payload.totals.amount += (payload.totals.shipping || 0) + (payload.totals.tax || 0);
+                // Adresses facturation + livraison
+                const billingAddr = {
+                    name: (billFields.name?.value || '').trim(), company: (billFields.company?.value || '').trim(),
+                    email: (billFields.email?.value || '').trim(), phone: (billFields.phone?.value || '').trim(),
+                    address1: (billFields.address1?.value || '').trim(), address2: (billFields.address2?.value || '').trim(),
+                    city: (billFields.city?.value || '').trim(), postcode: (billFields.postcode?.value || '').trim(),
+                    country: (billFields.country?.value || '').trim()
+                };
+                const hasBilling = Object.values(billingAddr).some(v => v);
+                if (hasBilling) payload.billing = { address: billingAddr };
+                const shippingAddr = {
+                    name: (shipFields.name?.value || '').trim(), company: (shipFields.company?.value || '').trim(), phone: (shipFields.phone?.value || '').trim(),
+                    address1: (shipFields.address1?.value || '').trim(), address2: (shipFields.address2?.value || '').trim(),
+                    city: (shipFields.city?.value || '').trim(), postcode: (shipFields.postcode?.value || '').trim(),
+                    country: (shipFields.country?.value || '').trim()
+                };
+                const hasShipping = Object.values(shippingAddr).some(v => v);
+                if (hasShipping) payload.shipping = { address: shippingAddr };
+                const estVal = (estEl?.value || '').trim();
+                if (estVal) {
+                  payload.shipping = payload.shipping || {};
+                  payload.shipping.estimatedDeliveryAt = estVal;
+                }
+                const vinVal = (vinEl?.value || '').trim();
+                if (vinVal) payload.meta = { vinOrPlate: vinVal };
+                // Référence technique (création)
+                const engVal = (engEl?.value || '').trim();
+                const tcuVal = (tcuEl?.value || '').trim();
+                const reqVal = !!(reqEl?.checked);
+                payload.meta = payload.meta || {};
+                if (engVal !== undefined) payload.meta.engineDisplacement = engVal;
+                if (tcuVal !== undefined) payload.meta.tcuReference = tcuVal;
+                payload.meta.technicalRefRequired = reqVal;
+                // Marquer payée (virement)
+                const markPaid = !!modal.querySelector('#co-mark-paid')?.checked;
+                if (markPaid) payload.markPaid = true;
+                if (!payload.customer.email) throw new Error('Email client requis');
+                const res = await fetch('/api/admin/orders', {
+                    method: 'POST',
+                    headers: { 'Authorization': `Basic ${authToken}`, 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok || !data.success) throw new Error(data.message || 'Création impossible');
+                onCleanup();
+                showToast('Commande créée', 'success');
+                try {
+                    const f1 = document.getElementById('orders-search-input'); if (f1) f1.value = '';
+                    const f2 = document.getElementById('orders-provider-filter'); if (f2) f2.value = '';
+                    const f3 = document.getElementById('orders-status-filter'); if (f3) f3.value = '';
+                    const f4 = document.getElementById('orders-from'); if (f4) f4.value = '';
+                    const f5 = document.getElementById('orders-to'); if (f5) f5.value = '';
+                    const f6 = document.getElementById('orders-sort'); if (f6) f6.value = 'date_desc';
+                } catch(_) {}
+                await loadOrdersList(1);
+                try { if (data.order && data.order._id) setTimeout(() => openOrderDetails(data.order._id), 200); } catch(_) {}
+            } catch (e) {
+                errEl.textContent = e.message || 'Erreur lors de la création';
+                errEl.style.display = 'block';
+            }
+        });
+    }
     
+    // Modale Expédition (transporteur + n° de suivi)
+    function openShipModal(orderId) {
+        if (!authToken) return logout();
+        const root = ensureModalRoot();
+        root.style.display = 'flex';
+        root.innerHTML = '';
+        const modal = document.createElement('div');
+        modal.className = 'cpf-modal';
+        modal.style.maxWidth = '520px';
+        modal.style.width = '95vw';
+        modal.innerHTML = `
+          <div class="cpf-modal-header">
+            <div class="icon"><i class="fas fa-truck"></i></div>
+            <div class="cpf-modal-title">Expédier la commande</div>
+          </div>
+          <div class="cpf-modal-body">
+            <style>
+              .ship-field { display:flex; flex-direction:column; gap:4px; margin-bottom:8px; }
+              .ship-field label { font-size:12px; color:#374151; }
+              .ship-field input, .ship-field select { height:36px; border:1px solid #d1d5db; border-radius:8px; padding:6px 10px; }
+              .ship-field input:focus, .ship-field select:focus { outline:none; border-color:#93c5fd; box-shadow:0 0 0 3px rgba(59,130,246,0.15); }
+            </style>
+            <div class="ship-field">
+              <label for="ship-carrier">Transporteur</label>
+              <input id="ship-carrier" type="text" placeholder="Ex: Colissimo, Chronopost, DHL…" />
+            </div>
+            <div class="ship-field">
+              <label for="ship-tracking">N° de suivi</label>
+              <input id="ship-tracking" type="text" placeholder="Ex: 8L123456789FR" />
+            </div>
+            <div id="ship-error" class="login-error" style="display:none;"></div>
+          </div>
+          <div class="cpf-modal-actions">
+            <button class="cpf-btn" data-action="cancel">Annuler</button>
+            <button class="cpf-btn cpf-btn-primary" data-action="confirm">Expédier</button>
+          </div>
+        `;
+        const onCleanup = () => { root.style.display = 'none'; root.innerHTML=''; root.removeEventListener('click', onOverlayClick); };
+        const onOverlayClick = (e) => { if (e.target === root) onCleanup(); };
+        root.addEventListener('click', onOverlayClick);
+        root.appendChild(modal);
+
+        const carrierEl = modal.querySelector('#ship-carrier');
+        const trackingEl = modal.querySelector('#ship-tracking');
+        const errEl = modal.querySelector('#ship-error');
+        const cancelBtn = modal.querySelector('[data-action="cancel"]');
+        const confirmBtn = modal.querySelector('[data-action="confirm"]');
+        let currentOrderMeta = null;
+
+        // Prefill depuis la commande si dispo
+        fetch(`/api/admin/orders/${encodeURIComponent(orderId)}`, { headers: { 'Authorization': `Basic ${authToken}` } })
+          .then(r => r.json()).then(d => {
+            if (d && d.success && d.order) {
+              if (d.order.shipping) {
+                if (d.order.shipping.carrier && carrierEl) carrierEl.value = d.order.shipping.carrier;
+                if (d.order.shipping.trackingNumber && trackingEl) trackingEl.value = d.order.shipping.trackingNumber;
+              }
+              currentOrderMeta = d.order.meta || null;
+            }
+          }).catch(() => {});
+
+        cancelBtn.addEventListener('click', onCleanup);
+        confirmBtn.addEventListener('click', async () => {
+          try {
+            errEl.style.display = 'none'; errEl.textContent = '';
+            const carrier = (carrierEl?.value || '').trim();
+            const trackingNumber = (trackingEl?.value || '').trim();
+            const errs = [];
+            if (!carrier) errs.push('Transporteur obligatoire');
+            if (!trackingNumber) errs.push('Numéro de suivi obligatoire');
+            if (errs.length) {
+              errEl.innerHTML = errs.map(e => `• ${e}`).join('<br/>');
+              errEl.style.display = 'block';
+              return;
+            }
+            // Confirmation supplémentaire si références requises mais incomplètes
+            try {
+              const techReq = !!(currentOrderMeta && currentOrderMeta.technicalRefRequired);
+              const engine = (currentOrderMeta && typeof currentOrderMeta.engineDisplacement === 'string') ? currentOrderMeta.engineDisplacement.trim() : '';
+              const tcu = (currentOrderMeta && typeof currentOrderMeta.tcuReference === 'string') ? currentOrderMeta.tcuReference.trim() : '';
+              if (techReq && (!engine || !tcu)) {
+                const ok = window.confirm('Les références techniques sont requises mais incomplètes (cylindrée/TCU). Expédier quand même ?');
+                if (!ok) return;
+              }
+            } catch(_) {}
+            confirmBtn.disabled = true;
+            confirmBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Envoi…';
+            const r = await fetch(`/api/admin/orders/${encodeURIComponent(orderId)}/ship`, {
+              method: 'POST',
+              headers: { 'Authorization': `Basic ${authToken}`, 'Content-Type': 'application/json' },
+              body: JSON.stringify({ carrier, trackingNumber })
+            });
+            const d = await r.json().catch(() => ({}));
+            if (!r.ok || !d.success) throw new Error(d.message || 'Échec expédition');
+            onCleanup();
+            showToast('Commande expédiée', 'success');
+            try {
+              if (d.parcelPanel && typeof d.parcelPanel === 'object' && d.parcelPanel.attempted) {
+                if (d.parcelPanel.ok) {
+                  showToast('Suivi envoyé à Woo (ParcelPanel): OK', 'success');
+                } else {
+                  showToast(`Suivi Woo non confirmé: ${d.parcelPanel.message || 'erreur API'}`, 'warning');
+                }
+              }
+            } catch(_) {}
+            await loadOrdersList(1);
+          } catch (e) {
+            errEl.textContent = e.message || 'Erreur expédition';
+            errEl.style.display = 'block';
+          } finally {
+            confirmBtn.disabled = false;
+            confirmBtn.innerHTML = 'Expédier';
+          }
+        });
+    }
+
     function handleHashRoute() {
         const hash = window.location.hash;
         // La documentation doit être consultable même sans être connecté
