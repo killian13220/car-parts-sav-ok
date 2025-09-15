@@ -188,14 +188,15 @@ async function syncWooAllOrders() {
     const cs = (process.env.WOOCOMMERCE_CONSUMER_SECRET || '').trim();
     if (!base || !ck || !cs) throw new Error('Variables WooCommerce manquantes');
     let page = 1;
-    const perPage = 100; // maximum recommandé par Woo
+    const perPage = 50; // réduire pour fiabiliser en prod (Railway)
     let processed = 0;
     for (;;) {
       const baseUrl = `${base.replace(/\/$/, '')}/wp-json/wc/v3/orders?per_page=${perPage}&page=${page}&orderby=date&order=desc`;
-      let resp = await fetch(baseUrl, { headers: { 'Authorization': `Basic ${base64(`${ck}:${cs}`)}` } });
-      if (resp.status === 401 || resp.status === 403) {
+      const headers = { 'Authorization': `Basic ${base64(`${ck}:${cs}`)}`, 'Accept': 'application/json', 'User-Agent': 'CarPartsSAV/1.0' };
+      let resp = await fetch(baseUrl, { headers });
+      if (!resp.ok) {
         const alt = `${base.replace(/\/$/, '')}/wp-json/wc/v3/orders?consumer_key=${encodeURIComponent(ck)}&consumer_secret=${encodeURIComponent(cs)}&per_page=${perPage}&page=${page}&orderby=date&order=desc`;
-        resp = await fetch(alt);
+        resp = await fetch(alt, { headers: { 'Accept': 'application/json', 'User-Agent': 'CarPartsSAV/1.0' } });
       }
       if (!resp.ok) {
         const txt = await resp.text().catch(() => '');
@@ -361,15 +362,11 @@ async function wooUpdateOrder(wooOrderId, wooPayload) {
   const cs = (process.env.WOOCOMMERCE_CONSUMER_SECRET || '').trim();
   if (!base || !ck || !cs) throw new Error('Config WooCommerce manquante');
   const url = `${base.replace(/\/$/, '')}/wp-json/wc/v3/orders/${encodeURIComponent(String(wooOrderId))}`;
-  let resp = await fetch(url, {
-    method: 'PUT',
-    headers: { 'Authorization': `Basic ${Buffer.from(`${ck}:${cs}`).toString('base64')}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(wooPayload)
-  });
-  if (resp.status === 401 || resp.status === 403) {
-    // fallback en query
+  const headersPut = { 'Authorization': `Basic ${base64(`${ck}:${cs}`)}`, 'Content-Type': 'application/json', 'Accept': 'application/json', 'User-Agent': 'CarPartsSAV/1.0' };
+  let resp = await fetch(url, { method: 'PUT', headers: headersPut, body: JSON.stringify(wooPayload) });
+  if (!resp.ok) {
     const alt = `${url}?consumer_key=${encodeURIComponent(ck)}&consumer_secret=${encodeURIComponent(cs)}`;
-    resp = await fetch(alt, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(wooPayload) });
+    resp = await fetch(alt, { method: 'PUT', headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'User-Agent': 'CarPartsSAV/1.0' }, body: JSON.stringify(wooPayload) });
   }
   if (!resp.ok) {
     const txt = await resp.text().catch(() => '');
@@ -603,13 +600,11 @@ async function syncWooRecentOrders() {
     if (!base || !ck || !cs) return;
     const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
     const url = `${base.replace(/\/$/, '')}/wp-json/wc/v3/orders?after=${encodeURIComponent(since)}&per_page=20&orderby=date&order=desc`;
-    let resp = await fetch(url, {
-      headers: { 'Authorization': `Basic ${base64(`${ck}:${cs}`)}` }
-    });
-    if (resp.status === 401 || resp.status === 403) {
-      // Fallback: certaines configs Woo exigent les clés en query
+    const headers2 = { 'Authorization': `Basic ${base64(`${ck}:${cs}`)}`, 'Accept': 'application/json', 'User-Agent': 'CarPartsSAV/1.0' };
+    let resp = await fetch(url, { headers: headers2 });
+    if (!resp.ok) {
       const url2 = `${base.replace(/\/$/, '')}/wp-json/wc/v3/orders?consumer_key=${encodeURIComponent(ck)}&consumer_secret=${encodeURIComponent(cs)}&after=${encodeURIComponent(since)}&per_page=20&orderby=date&order=desc`;
-      resp = await fetch(url2);
+      resp = await fetch(url2, { headers: { 'Accept': 'application/json', 'User-Agent': 'CarPartsSAV/1.0' } });
     }
     if (!resp.ok) {
       const txt = await resp.text().catch(() => '');
