@@ -75,6 +75,43 @@ mongoose.connection.once('open', () => {
   } catch(_) {}
 });
 
+// Diagnostic des variables d'environnement (ADMIN uniquement)
+app.get('/api/admin/diagnostics/env', authenticateAdmin, ensureAdmin, (req, res) => {
+  const mask = (v, start = 2, end = 4) => {
+    if (!v) return '';
+    const s = String(v);
+    if (s.length <= start + end) return '*'.repeat(Math.max(4, s.length));
+    return s.slice(0, start) + '***' + s.slice(-end);
+  };
+  const maskUri = (uri) => {
+    if (!uri) return '';
+    try {
+      const u = new URL(uri);
+      // Masquer identifiants éventuels
+      const host = u.host;
+      const db = (u.pathname || '').replace(/^\//, '');
+      return `${u.protocol}//${host}/${db ? db : ''}`;
+    } catch {
+      return mask(uri, 4, 4);
+    }
+  };
+  const envOut = {
+    NODE_ENV: process.env.NODE_ENV || '',
+    WEBSITE_URL: process.env.WEBSITE_URL || '',
+    CORS_ORIGIN: process.env.CORS_ORIGIN || '',
+    WOOCOMMERCE_BASE_URL: process.env.WOOCOMMERCE_BASE_URL || '',
+    WOOCOMMERCE_CONSUMER_KEY: mask(process.env.WOOCOMMERCE_CONSUMER_KEY || ''),
+    WOOCOMMERCE_CONSUMER_SECRET: mask(process.env.WOOCOMMERCE_CONSUMER_SECRET || ''),
+    ORDERS_SYNC_ENABLED: process.env.ORDERS_SYNC_ENABLED || '',
+    ORDERS_SYNC_INTERVAL_MINUTES: process.env.ORDERS_SYNC_INTERVAL_MINUTES || '',
+    STORAGE_DRIVER: process.env.STORAGE_DRIVER || '',
+    UPLOADS_DIR: process.env.UPLOADS_DIR || '',
+    MONGODB_URI: maskUri(process.env.MONGODB_URI || ''),
+  };
+  const present = Object.fromEntries(Object.entries(envOut).map(([k, v]) => [k, !!(v && String(v).length > 0)]));
+  res.json({ success: true, env: envOut, present });
+});
+
 // (Route DELETE déplacée plus bas après définition des middlewares)
 
 // (Route déplacée plus bas après définition des middlewares)
