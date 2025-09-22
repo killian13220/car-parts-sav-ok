@@ -2519,6 +2519,7 @@ async function checkAuth() {
         const searchInput = document.getElementById('orders-search-input');
         const providerSel = document.getElementById('orders-provider-filter');
         const statusSel = document.getElementById('orders-status-filter');
+        const typeSel = document.getElementById('orders-type-filter');
         const fromInput = document.getElementById('orders-from');
         const toInput = document.getElementById('orders-to');
         const sortSel = document.getElementById('orders-sort');
@@ -2529,6 +2530,7 @@ async function checkAuth() {
         if (refreshBtn) refreshBtn.addEventListener('click', () => loadOrdersList(1));
         const missingRefCbx = document.getElementById('orders-missing-techref');
         if (missingRefCbx) missingRefCbx.addEventListener('change', () => loadOrdersList(1));
+        if (typeSel) typeSel.addEventListener('change', () => loadOrdersList(1));
         if (rebuildTechBtn) rebuildTechBtn.addEventListener('click', async () => {
             if (!authToken) return logout();
             try {
@@ -2796,16 +2798,18 @@ async function checkAuth() {
             const q = (document.getElementById('orders-search-input')?.value || '').trim();
             const provider = (document.getElementById('orders-provider-filter')?.value || '').trim();
             const status = (document.getElementById('orders-status-filter')?.value || '').trim();
+            const productType = (document.getElementById('orders-type-filter')?.value || '').trim();
             const from = (document.getElementById('orders-from')?.value || '').trim();
             const to = (document.getElementById('orders-to')?.value || '').trim();
             const sortVal = (document.getElementById('orders-sort')?.value || 'date_desc');
-            if (tbody) tbody.innerHTML = '<tr><td colspan="8">Chargement…</td></tr>';
+            if (tbody) tbody.innerHTML = '<tr><td colspan="9">Chargement…</td></tr>';
             const params = new URLSearchParams();
             params.set('page', String(page));
             params.set('limit', '25');
             if (q) params.set('q', q);
             if (provider) params.set('provider', provider);
             if (status) params.set('status', status);
+            if (productType) params.set('productType', productType);
             if (from) params.set('from', from);
             if (to) params.set('to', to);
             const missingRefCbx = document.getElementById('orders-missing-techref');
@@ -2850,7 +2854,7 @@ async function checkAuth() {
         if (!tbody) return;
         const orders = Array.isArray(data.orders) ? data.orders : [];
         if (orders.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="8">Aucune commande</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="9">Aucune commande</td></tr>';
             return;
         }
         // Styles compacts pour le mini-popover (injectés une seule fois)
@@ -2883,6 +2887,15 @@ async function checkAuth() {
             const updated = srcUpdated ? new Date(srcUpdated).toLocaleString('fr-FR') : '';
             const client = (o.customer && (o.customer.name || o.customer.email)) ? `${o.customer.name || ''} ${o.customer.email ? `<small>${o.customer.email}</small>` : ''}` : '—';
             const src = o.provider || '—';
+            const ptypeRaw = (o.meta && o.meta.productType) ? String(o.meta.productType) : '';
+            const ptypeMap = {
+                'mecatronique_tcu': 'Mécatronique/TCU',
+                'pont': 'Pont',
+                'boite_transfert': 'Boîte de transfert',
+                'moteur': 'Moteur',
+                'autres': 'Autres'
+            };
+            const ptype = ptypeMap[ptypeRaw] || '';
             const st = renderStatusBadge(o.status || '—');
             const amt = formatMoney((o.totals && o.totals.amount) || 0, (o.totals && o.totals.currency) || 'EUR');
             const actions = document.createElement('div');
@@ -2954,6 +2967,7 @@ async function checkAuth() {
                 <td>${created}</td>
                 <td>${client}</td>
                 <td>${src}</td>
+                <td>${ptype}</td>
                 <td>${st}</td>
                 <td>${amt}</td>
                 <td>${updated}</td>
@@ -2979,6 +2993,8 @@ async function checkAuth() {
             case 'number_asc': return ['number', 'asc'];
             case 'status_asc': return ['status', 'asc'];
             case 'status_desc': return ['status', 'desc'];
+            case 'type_asc': return ['type', 'asc'];
+            case 'type_desc': return ['type', 'desc'];
             default: return ['date', 'desc'];
         }
     }
@@ -3032,6 +3048,7 @@ async function checkAuth() {
         const q = (document.getElementById('orders-search-input')?.value || '').trim();
         const provider = (document.getElementById('orders-provider-filter')?.value || '').trim();
         const status = (document.getElementById('orders-status-filter')?.value || '').trim();
+        const productType = (document.getElementById('orders-type-filter')?.value || '').trim();
         const from = (document.getElementById('orders-from')?.value || '').trim();
         const to = (document.getElementById('orders-to')?.value || '').trim();
         const sortVal = (document.getElementById('orders-sort')?.value || 'date_desc');
@@ -3039,6 +3056,7 @@ async function checkAuth() {
         if (q) params.set('q', q);
         if (provider) params.set('provider', provider);
         if (status) params.set('status', status);
+        if (productType) params.set('productType', productType);
         if (from) params.set('from', from);
         if (to) params.set('to', to);
         const [sort, dir] = parseSort(sortVal);
@@ -3720,6 +3738,7 @@ async function checkAuth() {
                     const f4 = document.getElementById('orders-from'); if (f4) f4.value = '';
                     const f5 = document.getElementById('orders-to'); if (f5) f5.value = '';
                     const f6 = document.getElementById('orders-sort'); if (f6) f6.value = 'date_desc';
+                    const f7 = document.getElementById('orders-type-filter'); if (f7) f7.value = '';
                 } catch(_) {}
                 await loadOrdersList(1);
                 try { if (data.order && data.order._id) setTimeout(() => openOrderDetails(data.order._id), 200); } catch(_) {}

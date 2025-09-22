@@ -66,7 +66,10 @@ const orderSchema = new mongoose.Schema({
     // Références techniques internes (mécatronique/TCU)
     engineDisplacement: String, // ex: "1.4"
     tcuReference: String,       // ex: "0AM927769D"
-    technicalRefRequired: { type: Boolean, default: false }
+    technicalRefRequired: { type: Boolean, default: false },
+    // Type de produit (pour filtrer et trier la liste des commandes)
+    // Valeurs possibles: mecatronique_tcu, pont, boite_transfert, moteur, autres
+    productType: { type: String, enum: ['mecatronique_tcu','pont','boite_transfert','moteur','autres'], default: 'autres', index: true }
   },
   events: [orderEventSchema]
 }, { timestamps: true });

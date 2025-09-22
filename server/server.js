@@ -43,6 +43,36 @@ function detectTechRefFromItems(items) {
     return false;
   } catch { return false; }
 }
+
+// Détection du type de produit (mécatronique/TCU, pont, boîte de transfert, moteur, autres)
+function detectProductTypeFromItems(items) {
+  try {
+    if (!Array.isArray(items) || items.length === 0) return 'autres';
+    const norm = (s) => String(s || '').toLowerCase();
+    // Groupes de mots-clés par catégorie (priorité: méca/TCU > pont > boîte transfert > moteur)
+    const kw = {
+      mecatronique_tcu: [
+        'mecatron', 'mécatron', 'mechatron', 'mechatronic', 'mechatronics',
+        'tcu', 'dq200', 'dq250', 'dq381', '0am', '0cq', '0cw', '0am927', '0am 927', '0am-927',
+        '0am927769', '0am927769d'
+      ],
+      pont: [ 'pont', 'differential', 'différentiel', 'differentiel', 'diff ', 'diff-' ],
+      boite_transfert: [ 'boite de transfert', 'boîte de transfert', 'transfer case', 'atc', 'xdrive', 'nvg', 'vg ' ],
+      moteur: [ 'moteur', 'engine', 'bloc moteur', 'block engine', 'block moteur', 'mtr ' ]
+    };
+    const containsAny = (text, keys) => keys.some(k => text.includes(k));
+    for (const it of items) {
+      const name = norm(it?.name);
+      const sku = norm(it?.sku);
+      const text = `${name} ${sku}`;
+      if (containsAny(text, kw.mecatronique_tcu)) return 'mecatronique_tcu';
+      if (containsAny(text, kw.pont)) return 'pont';
+      if (containsAny(text, kw.boite_transfert)) return 'boite_transfert';
+      if (containsAny(text, kw.moteur)) return 'moteur';
+    }
+    return 'autres';
+  } catch { return 'autres'; }
+}
 const { sendStatusUpdateEmail, sendTicketCreationEmail, sendAssignmentEmail, sendAssistanceRequestEmail, sendEscalationEmail, sendSlaReminderEmail, sendPasswordResetEmail } = require('./services/emailService');
 const setupStatsRoutes = require('./stats-api');
 const { authenticateAdmin: adminAuthMW } = require('./middleware/auth');
@@ -72,6 +102,14 @@ mongoose.connection.once('open', () => {
         console.log(`[techref] Rétroactif terminé: ${updated} mise(s) à jour sur ${scanned} commande(s)`);
       })
       .catch((e) => console.warn('[techref] Rétroactif: erreur non bloquante', e?.message || e));
+  } catch(_) {}
+  // Recalcul rétroactif automatique du type de produit (pour tri/filtre UI)
+  try {
+    rebuildProductTypeInternal()
+      .then(({ scanned, updated }) => {
+        console.log(`[ptype] Rétroactif terminé: ${updated} mise(s) à jour sur ${scanned} commande(s)`);
+      })
+      .catch((e) => console.warn('[ptype] Rétroactif: erreur non bloquante', e?.message || e));
   } catch(_) {}
 });
 
@@ -114,6 +152,29 @@ async function rebuildTechnicalRefsInternal() {
       doc.meta.technicalRefRequired = true;
       doc.events = doc.events || [];
       doc.events.push({ type: 'technical_ref_required_set', message: 'Référence technique requise (rétroactif auto)', at: new Date() });
+      await doc.save();
+      updated++;
+    }
+  }
+  return { scanned, updated };
+}
+
+// Fonction interne: recalculer en base le type de produit à partir des items
+async function rebuildProductTypeInternal() {
+  let scanned = 0;
+  let updated = 0;
+  const cursor = Order.find({}, { items: 1, meta: 1 }).cursor();
+  for (let doc = await cursor.next(); doc != null; doc = await cursor.next()) {
+    scanned++;
+    const items = Array.isArray(doc.items) ? doc.items : [];
+    const ptype = detectProductTypeFromItems(items);
+    const hasMeta = !!doc.meta && typeof doc.meta === 'object';
+    const current = hasMeta ? doc.meta.productType : undefined;
+    if (current !== ptype) {
+      doc.meta = doc.meta || {};
+      doc.meta.productType = ptype;
+      doc.events = doc.events || [];
+      doc.events.push({ type: 'product_type_set', message: `Type produit = ${ptype}`, at: new Date() });
       await doc.save();
       updated++;
     }
@@ -233,6 +294,7 @@ async function syncWooAllOrders() {
           qty: li.quantity || 0,
           unitPrice: parseFloat((li.price || li.total || 0).toString())
         })) : [];
+        const productType = detectProductTypeFromItems(items);
         const billingAddress = payload.billing ? {
           name: `${payload.billing.first_name || ''} ${payload.billing.last_name || ''}`.trim(),
           company: payload.billing.company || '',
@@ -268,6 +330,7 @@ async function syncWooAllOrders() {
           ...(billingAddress ? { 'billing.address': billingAddress } : {}),
           ...(shippingAddress ? { 'shipping.address': shippingAddress } : {})
         };
+        update['meta.productType'] = productType;
         // VIN/Plaque depuis meta_data
         let vinMeta = null;
         try { vinMeta = extractVinFromWooMeta(payload.meta_data); } catch {}
@@ -680,6 +743,8 @@ async function syncWooRecentOrders() {
         ...(billingAddress2 ? { 'billing.address': billingAddress2 } : {}),
         ...(shippingAddress2 ? { 'shipping.address': shippingAddress2 } : {})
       };
+      const productType2 = detectProductTypeFromItems(items);
+      update['meta.productType'] = productType2;
       // VIN/Plaque depuis meta_data
       let vinMeta2 = null;
       try { vinMeta2 = extractVinFromWooMeta(payload.meta_data); } catch {}
@@ -2814,6 +2879,7 @@ app.get('/api/admin/orders', authenticateAdmin, ensureAdminOrAgent, async (req, 
     const q = String(req.query.q || '').trim();
     const status = String(req.query.status || '').trim();
     const provider = String(req.query.provider || '').trim();
+    const productType = String(req.query.productType || '').trim();
     const from = String(req.query.from || '').trim();
     const to = String(req.query.to || '').trim();
     const sortBy = String(req.query.sort || '').trim() || 'date';
@@ -2823,6 +2889,7 @@ app.get('/api/admin/orders', authenticateAdmin, ensureAdminOrAgent, async (req, 
     const filter = {};
     if (status) filter.status = status;
     if (provider) filter.provider = provider;
+    if (productType) filter['meta.productType'] = productType;
     if (q) {
       filter.$or = [
         { number: new RegExp(q, 'i') },
@@ -2862,7 +2929,8 @@ app.get('/api/admin/orders', authenticateAdmin, ensureAdminOrAgent, async (req, 
       'created': 'createdAt',
       'amount': 'totals.amount',
       'status': 'status',
-      'number': 'number'
+      'number': 'number',
+      'type': 'meta.productType'
     };
 
     const total = await Order.countDocuments(filter);
@@ -2897,6 +2965,7 @@ app.get('/api/admin/orders/export.csv', authenticateAdmin, ensureAdminOrAgent, a
     const q = String(req.query.q || '').trim();
     const status = String(req.query.status || '').trim();
     const provider = String(req.query.provider || '').trim();
+    const productType = String(req.query.productType || '').trim();
     const from = String(req.query.from || '').trim();
     const to = String(req.query.to || '').trim();
     const sortBy = String(req.query.sort || '').trim() || 'date';
@@ -2906,6 +2975,7 @@ app.get('/api/admin/orders/export.csv', authenticateAdmin, ensureAdminOrAgent, a
     const filter = {};
     if (status) filter.status = status;
     if (provider) filter.provider = provider;
+    if (productType) filter['meta.productType'] = productType;
     if (q) {
       filter.$or = [
         { number: new RegExp(q, 'i') },
@@ -2940,7 +3010,8 @@ app.get('/api/admin/orders/export.csv', authenticateAdmin, ensureAdminOrAgent, a
       'created': 'createdAt',
       'amount': 'totals.amount',
       'status': 'status',
-      'number': 'number'
+      'number': 'number',
+      'type': 'meta.productType'
     };
 
     let orders = [];
@@ -2963,7 +3034,7 @@ app.get('/api/admin/orders/export.csv', authenticateAdmin, ensureAdminOrAgent, a
       if (s.includes('"') || s.includes(',') || s.includes('\n')) return '"' + s.replace(/"/g, '""') + '"';
       return s;
     };
-    const headers = ['id','number','provider','status','date_created','date_updated','customer_name','customer_email','customer_phone','currency','amount','items_count'];
+    const headers = ['id','number','provider','status','product_type','date_created','date_updated','customer_name','customer_email','customer_phone','currency','amount','items_count'];
     const rows = [headers.join(',')];
     for (const o of orders) {
       const row = [
@@ -2971,6 +3042,7 @@ app.get('/api/admin/orders/export.csv', authenticateAdmin, ensureAdminOrAgent, a
         esc(o.number || ''),
         esc(o.provider || ''),
         esc(o.status || ''),
+        esc(o.meta?.productType || ''),
         esc(o.createdAt ? new Date(o.createdAt).toISOString() : ''),
         esc(o.updatedAt ? new Date(o.updatedAt).toISOString() : ''),
         esc(o.customer?.name || ''),
@@ -3116,6 +3188,13 @@ app.post('/api/admin/orders', authenticateAdmin, ensureAdminOrAgent, async (req,
         order.events = order.events || [];
         order.events.push({ type: 'technical_ref_required_set', message: 'Référence technique requise (auto)' });
       }
+    } catch {}
+
+    // Détection du type de produit (pour tri/filtre)
+    try {
+      const ptype = detectProductTypeFromItems(order.items || []);
+      order.meta = order.meta || {};
+      order.meta.productType = ptype;
     } catch {}
 
     // Marquer payée immédiatement (virement)

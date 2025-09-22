@@ -371,6 +371,7 @@
                             /* Largeurs minimales pour éviter l'écrasement visuel */
                             #orders-provider-filter,
                             #orders-status-filter,
+                            #orders-type-filter,
                             #orders-from,
                             #orders-to,
                             #orders-sort { min-width: 150px; }
@@ -453,6 +454,14 @@
                                     <option value="refunded">Remboursée</option>
                                     <option value="disputed">Litige</option>
                                 </select>
+                                <select id="orders-type-filter" title="Type de produit">
+                                    <option value="">Tous types</option>
+                                    <option value="mecatronique_tcu">Mécatronique/TCU</option>
+                                    <option value="pont">Pont</option>
+                                    <option value="boite_transfert">Boîte de transfert</option>
+                                    <option value="moteur">Moteur</option>
+                                    <option value="autres">Autres</option>
+                                </select>
                                 <input type="date" id="orders-from" title="Du">
                                 <input type="date" id="orders-to" title="Au">
                                 <select id="orders-sort" title="Tri">
@@ -464,6 +473,8 @@
                                     <option value="number_asc">Numéro (asc)</option>
                                     <option value="status_asc">Statut (A→Z)</option>
                                     <option value="status_desc">Statut (Z→A)</option>
+                                    <option value="type_asc">Type (A→Z)</option>
+                                    <option value="type_desc">Type (Z→A)</option>
                                 </select>
                                 <label title="Afficher les commandes où la référence technique est requise mais manquante" style="display:inline-flex; align-items:center; gap:6px; font-size:13px; color:#374151;">
                                     <input type="checkbox" id="orders-missing-techref" /> Réf manquante
@@ -480,6 +491,7 @@
                                         <th>Date</th>
                                         <th>Client</th>
                                         <th>Source</th>
+                                        <th>Type</th>
                                         <th>Statut</th>
                                         <th>Montant</th>
                                         <th>Activité</th>
