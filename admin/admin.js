@@ -2607,23 +2607,35 @@ async function checkAuth() {
                 }
                 return;
             }
-            const id = btn.dataset.id;
             const action = btn.dataset.action;
+            if (action === 'copy-vin') {
+                try {
+                    const val = (btn.dataset.vin || '').trim();
+                    if (val) {
+                        if (navigator.clipboard && navigator.clipboard.writeText) {
+                            await navigator.clipboard.writeText(val);
+                        } else {
+                            const ta = document.createElement('textarea');
+                            ta.value = val;
+                            ta.style.position = 'fixed';
+                            ta.style.left = '-9999px';
+                            document.body.appendChild(ta);
+                            ta.focus(); ta.select();
+                            document.execCommand('copy');
+                            ta.remove();
+                        }
+                        showToast('VIN / Plaque copié', 'success');
+                    }
+                } catch (_) {
+                    showToast('Impossible de copier', 'error');
+                }
+                return; // ne pas ouvrir les détails
+            }
+            const id = btn.dataset.id;
             if (!id || !action) return;
             try {
-                if (action === 'mark-paid') {
-                    const r = await fetch(`/api/admin/orders/${encodeURIComponent(id)}/mark-paid`, {
-                        method: 'POST',
-                        headers: { 'Authorization': `Basic ${authToken}` }
-                    });
-                    const d = await r.json().catch(() => ({}));
-                    if (!r.ok || !d.success) throw new Error(d.message || 'Échec marquage payé');
-                    showToast('Commande marquée payée', 'success');
-                    await loadOrdersList(1);
-                } else if (action === 'ship') {
+                if (action === 'ship') {
                     openShipModal(id);
-                } else if (action === 'edit') {
-                    openEditOrderModal(id);
                 } else if (action === 'delete') {
                     const ok = window.confirm('Supprimer définitivement cette commande ?');
                     if (!ok) return;
@@ -2887,6 +2899,10 @@ async function checkAuth() {
             const updated = srcUpdated ? new Date(srcUpdated).toLocaleString('fr-FR') : '';
             const client = (o.customer && (o.customer.name || o.customer.email)) ? `${o.customer.name || ''} ${o.customer.email ? `<small>${o.customer.email}</small>` : ''}` : '—';
             const src = o.provider || '—';
+            const vinOrPlate = (o.meta && typeof o.meta.vinOrPlate === 'string' && o.meta.vinOrPlate.trim()) ? o.meta.vinOrPlate.trim().toUpperCase() : '—';
+            const vinCell = (vinOrPlate && vinOrPlate !== '—')
+                ? `<button class="vin-copy-btn" data-action="copy-vin" data-vin="${vinOrPlate}" title="Cliquer pour copier">${vinOrPlate}</button>`
+                : '—';
             const ptypeRaw = (o.meta && o.meta.productType) ? String(o.meta.productType) : '';
             const ptypeMap = {
                 'mecatronique_tcu': 'Mécatronique/TCU',
@@ -2901,16 +2917,6 @@ async function checkAuth() {
             const actions = document.createElement('div');
             actions.style.display = 'flex';
             actions.style.gap = '6px';
-            const btnPaid = document.createElement('button');
-            btnPaid.className = 'btn-secondary';
-            btnPaid.textContent = 'Marquer payé';
-            btnPaid.dataset.action = 'mark-paid';
-            btnPaid.dataset.id = o._id;
-            const btnEdit = document.createElement('button');
-            btnEdit.className = 'btn-secondary';
-            btnEdit.textContent = 'Modifier';
-            btnEdit.dataset.action = 'edit';
-            btnEdit.dataset.id = o._id;
             const btnShip = document.createElement('button');
             btnShip.className = 'btn-secondary';
             btnShip.textContent = 'Expédier';
@@ -2955,8 +2961,6 @@ async function checkAuth() {
                     btnEst.title = 'Définir livraison estimée';
                 }
             } catch { btnEst.title = 'Définir livraison estimée'; }
-            actions.appendChild(btnPaid);
-            actions.appendChild(btnEdit);
             actions.appendChild(btnShip);
             if (dot) actions.appendChild(dot);
             actions.appendChild(btnRef);
@@ -2966,11 +2970,11 @@ async function checkAuth() {
                 <td>${num}</td>
                 <td>${created}</td>
                 <td>${client}</td>
+                <td>${vinCell}</td>
                 <td>${src}</td>
                 <td>${ptype}</td>
                 <td>${st}</td>
                 <td>${amt}</td>
-                <td>${updated}</td>
                 <td></td>
             `;
             const tdActions = tr.querySelector('td:last-child');

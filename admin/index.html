@@ -426,6 +426,28 @@
                             /* Bouton Export détaché visuellement */
                             #orders-export-btn { border: 1px solid #e5e7eb; background:#fff; }
                             #orders-export-btn:hover { background:#f9fafb; border-color:#d1d5db; }
+                            /* Table commandes: scroll horizontal + colonne Actions collée */
+                            .users-list-card { overflow-x: auto; }
+                            .users-list-card .tickets-table { min-width: 1200px; }
+                            /* VIN / Plaque: limiter la largeur et tronquer proprement */
+                            #admin-orders .tickets-table th:nth-child(4),
+                            #admin-orders .tickets-table td:nth-child(4) {
+                                max-width: 280px;
+                                white-space: nowrap;
+                                overflow: hidden;
+                                text-overflow: ellipsis;
+                            }
+                            /* Colonne Actions collée à droite pour garder les boutons visibles */
+                            #admin-orders .tickets-table th:last-child,
+                            #admin-orders .tickets-table td:last-child {
+                                position: sticky;
+                                right: 0;
+                                background: #fff;
+                                z-index: 1;
+                                min-width: max-content; /* s'ajuste au contenu, pas d'espace perdu */
+                                padding-right: 8px;
+                                box-shadow: -6px 0 8px rgba(0,0,0,0.03);
+                            }
                         </style>
                         <div class="settings-actions" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
                             <button id="orders-create-btn" class="btn-primary"><i class="fas fa-plus"></i> Créer une commande (brouillon)</button>
@@ -490,11 +512,11 @@
                                         <th>N°</th>
                                         <th>Date</th>
                                         <th>Client</th>
+                                        <th>VIN / Plaque</th>
                                         <th>Source</th>
                                         <th>Type</th>
                                         <th>Statut</th>
                                         <th>Montant</th>
-                                        <th>Activité</th>
                                         <th>Actions</th>
                                     </tr>
                                 </thead>
