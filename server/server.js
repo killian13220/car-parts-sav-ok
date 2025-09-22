@@ -331,9 +331,9 @@ async function syncWooAllOrders() {
           ...(shippingAddress ? { 'shipping.address': shippingAddress } : {})
         };
         update['meta.productType'] = productType;
-        // VIN/Plaque depuis meta_data
+        // VIN/Plaque depuis meta_data / lignes / note client
         let vinMeta = null;
-        try { vinMeta = extractVinFromWooMeta(payload.meta_data); } catch {}
+        try { vinMeta = extractVinFromWooOrder(payload); } catch {}
         if (vinMeta && vinMeta.value) {
           update['meta.vinOrPlate'] = vinMeta.value;
           if (vinMeta.key) update['meta.wooVinMetaKey'] = vinMeta.key;
@@ -346,9 +346,6 @@ async function syncWooAllOrders() {
           if (autoFlag) setOnInsert['meta.technicalRefRequired'] = true;
         } catch {}
         const ops = { $set: update, $setOnInsert: setOnInsert };
-        if (!vinMeta || !vinMeta.value) {
-          ops.$unset = { 'meta.vinOrPlate': '' };
-        }
         await Order.updateOne(
           { provider: 'woocommerce', providerOrderId: wooId },
           ops,
@@ -454,6 +451,27 @@ function splitName(fullName) {
   return { first_name: parts.join(' '), last_name: last };
 }
 
+// Extraire un VIN ou une plaque depuis un texte libre (ex: "VIN: WVWZZZ...")
+function extractVinOrPlateFromText(text) {
+  try {
+    const str = String(text ?? '').trim();
+    if (!str) return null;
+    // Chercher un VIN n'importe où dans la chaîne
+    const vinMatch = str.match(/([A-HJ-NPR-Z0-9]{17})/i); // exclut I, O, Q
+    if (vinMatch && vinMatch[1]) {
+      return { type: 'vin', value: vinMatch[1].toUpperCase() };
+    }
+    // Chercher une plaque FR AA-123-AA (avec ou sans tirets)
+    const plateMatch = str.match(/\b([A-Z]{2}-?\d{3}-?[A-Z]{2})\b/i);
+    if (plateMatch && plateMatch[1]) {
+      // Normaliser en AA-123-AA
+      const raw = plateMatch[1].toUpperCase().replace(/[^A-Z0-9]/g, '');
+      return { type: 'plate', value: `${raw.slice(0,2)}-${raw.slice(2,5)}-${raw.slice(5,7)}` };
+    }
+    return null;
+  } catch { return null; }
+}
+
 // Extraire VIN / Plaque depuis les meta WooCommerce
 function extractVinFromWooMeta(metaArr) {
   try {
@@ -477,32 +495,79 @@ function extractVinFromWooMeta(metaArr) {
       const keyL = norm(rawKey);
       const keyN = normKey(rawKey);
       const rawVal = m?.value;
-      const val = String(rawVal ?? '').trim();
+      let val = '';
+      if (rawVal == null) val = '';
+      else if (typeof rawVal === 'string' || typeof rawVal === 'number' || typeof rawVal === 'boolean') val = String(rawVal);
+      else if (Array.isArray(rawVal)) val = rawVal.map(x => (typeof x === 'string' ? x : JSON.stringify(x))).join(' ');
+      else if (typeof rawVal === 'object') val = JSON.stringify(rawVal);
+      val = String(val).trim();
       if (!val) continue;
       if (isUrl(val)) continue; // ignorer URLs et referrers
 
       const byExactKey = keywordKeys.some(k => keyN === normKey(k));
       const byKeyInclude = keyIncludes.some(k => keyL.includes(k));
-      const byVin = looksVin(val);
-      const byPlate = looksFrPlate(val);
+      const foundInText = extractVinOrPlateFromText(val);
+      const byVin = looksVin(val) || (foundInText?.type === 'vin');
+      const byPlate = looksFrPlate(val) || (foundInText?.type === 'plate');
 
-      // Scoring: clé exacte > clé indicative > format VIN > format plaque
+      // Scoring: clé exacte + contenu trouvé > clé indicative + contenu > détection brute
       let score = -1;
-      if (byExactKey) score = 100;
+      if (byExactKey && (byVin || byPlate)) score = 110;
+      else if (byExactKey) score = 100;
+      else if (byKeyInclude && (byVin || byPlate)) score = 90;
       else if (byKeyInclude) score = 80;
-      if (byVin) score = Math.max(score, 75);
-      if (byPlate) score = Math.max(score, 65);
+      if (byVin) score = Math.max(score, 78);
+      if (byPlate) score = Math.max(score, 68);
       if (score < 0) continue; // rien d'assez fiable
 
       // Préférence: si clé parle de vin/plaque mais valeur trop longue, on filtre
       if ((byExactKey || byKeyInclude) && val.length > 64) continue;
 
+      let chosen = val;
+      if (foundInText && foundInText.value) chosen = foundInText.value; // extraire proprement "VIN: XXXXX"
       if (score > bestScore) {
         bestScore = score;
-        best = { key: rawKey || 'vin_or_plaque', id: m.id != null ? String(m.id) : undefined, value: val };
+        best = { key: rawKey || 'vin_or_plaque', id: m.id != null ? String(m.id) : undefined, value: chosen };
       }
     }
     return best;
+  } catch { return null; }
+}
+
+// Chercher VIN/plaques dans les meta des lignes d'articles
+function extractVinFromWooLineItems(lineItems) {
+  try {
+    if (!Array.isArray(lineItems)) return null;
+    for (const li of lineItems) {
+      const metas = Array.isArray(li?.meta_data) ? li.meta_data : [];
+      const found = extractVinFromWooMeta(metas);
+      if (found && found.value) return found;
+      // Essayer aussi dans le nom de la ligne
+      const fromName = extractVinOrPlateFromText(li?.name || '');
+      if (fromName) return { key: 'line_item_name', value: fromName.value };
+    }
+    return null;
+  } catch { return null; }
+}
+
+// Orchestrateur: extrait depuis order.meta_data, lignes et customer_note
+function extractVinFromWooOrder(payload) {
+  try {
+    // 1) meta_data de la commande
+    const a = extractVinFromWooMeta(payload?.meta_data);
+    if (a && a.value) return a;
+    // 2) meta_data des lignes (ou nom)
+    const b = extractVinFromWooLineItems(payload?.line_items);
+    if (b && b.value) return b;
+    // 3) note client
+    const c0 = extractVinOrPlateFromText(payload?.customer_note || '');
+    if (c0 && c0.value) return { key: 'customer_note', value: c0.value };
+    // 4) à défaut, tenter certains champs texte
+    const d0 = extractVinOrPlateFromText(payload?.billing?.company || '');
+    if (d0 && d0.value) return { key: 'billing.company', value: d0.value };
+    const d1 = extractVinOrPlateFromText(payload?.shipping?.company || '');
+    if (d1 && d1.value) return { key: 'shipping.company', value: d1.value };
+    return null;
   } catch { return null; }
 }
 // Mise à jour d'une commande (et sync Woo si provider=woocommerce)
@@ -638,8 +703,8 @@ app.put('/api/admin/orders/:id', adminAuthMW, async (req, res) => {
         order.meta = order.meta || {};
         if (wooCreated) order.meta.sourceCreatedAt = new Date(wooCreated);
         if (wooUpdated) order.meta.sourceUpdatedAt = new Date(wooUpdated);
-        // Actualiser vin/plaque et méta id/key depuis la réponse
-        const metaFromResp = extractVinFromWooMeta(wooResp.meta_data);
+        // Actualiser vin/plaque et méta id/key depuis la réponse (meta, lignes, note)
+        const metaFromResp = extractVinFromWooOrder(wooResp);
         if (metaFromResp && metaFromResp.value) {
           order.meta.vinOrPlate = metaFromResp.value;
           order.meta.wooVinMetaKey = metaFromResp.key || order.meta.wooVinMetaKey || 'vin_or_plaque';
@@ -745,9 +810,9 @@ async function syncWooRecentOrders() {
       };
       const productType2 = detectProductTypeFromItems(items);
       update['meta.productType'] = productType2;
-      // VIN/Plaque depuis meta_data
+      // VIN/Plaque depuis meta_data / lignes / note client
       let vinMeta2 = null;
-      try { vinMeta2 = extractVinFromWooMeta(payload.meta_data); } catch {}
+      try { vinMeta2 = extractVinFromWooOrder(payload); } catch {}
       if (vinMeta2 && vinMeta2.value) {
         update['meta.vinOrPlate'] = vinMeta2.value;
         if (vinMeta2.key) update['meta.wooVinMetaKey'] = vinMeta2.key;
@@ -759,9 +824,6 @@ async function syncWooRecentOrders() {
         if (autoFlag) setOnInsert['meta.technicalRefRequired'] = true;
       } catch {}
       const ops2 = { $set: update, $setOnInsert: setOnInsert };
-      if (!vinMeta2 || !vinMeta2.value) {
-        ops2.$unset = { 'meta.vinOrPlate': '' };
-      }
       await Order.updateOne(
         { provider: 'woocommerce', providerOrderId: wooId },
         ops2,
