@@ -334,6 +334,14 @@ async function syncWooAllOrders() {
         // VIN/Plaque depuis meta_data / lignes / note client
         let vinMeta = null;
         try { vinMeta = extractVinFromWooOrder(payload); } catch {}
+        // Fallback: si non trouvé, charger le détail de la commande (liste tronque parfois les métadonnées)
+        if (!vinMeta || !vinMeta.value) {
+          try {
+            const detail = await fetchWooOrderDetail(base, ck, cs, wooId);
+            const v2 = extractVinFromWooOrder(detail);
+            if (v2 && v2.value) vinMeta = v2;
+          } catch { /* ignore */ }
+        }
         if (vinMeta && vinMeta.value) {
           update['meta.vinOrPlate'] = vinMeta.value;
           if (vinMeta.key) update['meta.wooVinMetaKey'] = vinMeta.key;
@@ -438,6 +446,22 @@ async function wooUpdateOrder(wooOrderId, wooPayload) {
   if (!resp.ok) {
     const txt = await resp.text().catch(() => '');
     throw new Error(`Woo update HTTP ${resp.status}: ${txt}`);
+  }
+  return await resp.json();
+}
+
+// Récupérer le détail d'une commande Woo (contient meta_data complet, notes, etc.)
+async function fetchWooOrderDetail(base, ck, cs, wooOrderId) {
+  const baseClean = base.replace(/\/$/, '');
+  const headers = { 'Authorization': `Basic ${base64(`${ck}:${cs}`)}`, 'Accept': 'application/json', 'User-Agent': 'CarPartsSAV/1.0' };
+  let resp = await fetch(`${baseClean}/wp-json/wc/v3/orders/${encodeURIComponent(wooOrderId)}`, { headers });
+  if (!resp.ok) {
+    const alt = `${baseClean}/wp-json/wc/v3/orders/${encodeURIComponent(wooOrderId)}?consumer_key=${encodeURIComponent(ck)}&consumer_secret=${encodeURIComponent(cs)}`;
+    resp = await fetch(alt, { headers: { 'Accept': 'application/json', 'User-Agent': 'CarPartsSAV/1.0' } });
+  }
+  if (!resp.ok) {
+    const txt = await resp.text().catch(() => '');
+    throw new Error(`Woo order detail HTTP ${resp.status}: ${txt}`);
   }
   return await resp.json();
 }
@@ -813,6 +837,13 @@ async function syncWooRecentOrders() {
       // VIN/Plaque depuis meta_data / lignes / note client
       let vinMeta2 = null;
       try { vinMeta2 = extractVinFromWooOrder(payload); } catch {}
+      if (!vinMeta2 || !vinMeta2.value) {
+        try {
+          const detail2 = await fetchWooOrderDetail(base, ck, cs, wooId);
+          const v3 = extractVinFromWooOrder(detail2);
+          if (v3 && v3.value) vinMeta2 = v3;
+        } catch { /* ignore */ }
+      }
       if (vinMeta2 && vinMeta2.value) {
         update['meta.vinOrPlate'] = vinMeta2.value;
         if (vinMeta2.key) update['meta.wooVinMetaKey'] = vinMeta2.key;
