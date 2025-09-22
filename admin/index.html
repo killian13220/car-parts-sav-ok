@@ -437,6 +437,24 @@
                                 overflow: hidden;
                                 text-overflow: ellipsis;
                             }
+                            /* Bouton VIN: style neutre, lisible partout (Chrome/Safari) */
+                            .vin-copy-btn {
+                                background: transparent;
+                                border: none;
+                                padding: 0;
+                                margin: 0;
+                                color: var(--text-color);
+                                font: inherit;
+                                line-height: 1.2;
+                                display: inline-block; /* important pour Chrome */
+                                max-width: 100%; /* suivre la largeur de la cellule */
+                                white-space: nowrap;
+                                overflow: hidden;
+                                text-overflow: ellipsis;
+                                cursor: pointer;
+                                text-decoration: underline;
+                            }
+                            .vin-copy-btn:hover { opacity: 0.9; }
                             /* Colonne Actions collée à droite pour garder les boutons visibles */
                             #admin-orders .tickets-table th:last-child,
                             #admin-orders .tickets-table td:last-child {
@@ -1034,7 +1052,7 @@
     <script src="https://cdn.jsdelivr.net/npm/turndown@7.1.2/dist/turndown.js"></script>
     <div id="cpf-toast-container" class="cpf-toast-container"></div>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-    <script src="admin.js?v=20250809-1"></script>
+    <script src="admin.js?v=20250922-2"></script>
     <script src="kanban.js?v=20250809-1"></script>
 </body>
 </html>
