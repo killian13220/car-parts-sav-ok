@@ -260,7 +260,6 @@ function openEditOrderModal(orderId) {
         const onCleanup = () => { root.style.display = 'none'; root.innerHTML=''; root.removeEventListener('click', onOverlayClick); };
         const onOverlayClick = (e) => { if (e.target === root) onCleanup(); };
         root.addEventListener('click', onOverlayClick);
-        root.appendChild(modal);
         console.debug('[orders] openEditOrderModal: modal appended to root, visible=', root.style.display);
         const closeBtn = modal.querySelector('[data-action="close"]');
         if (closeBtn) closeBtn.addEventListener('click', onCleanup);
@@ -3244,7 +3243,7 @@ async function checkAuth() {
         if (action === 'ship') {
             const carrier = btn.dataset.carrier || '';
             const tracking = btn.dataset.tracking || '';
-            try { openShipModal(id, { carrier, tracking, shippedDate: '' }); }
+            try { window.openShipModal(id, { carrier, tracking, shippedDate: '' }); }
             catch (e) {
                 console.error('openShipModal error', e);
                 showToast('Impossible d\'ouvrir la fenêtre d\'expédition', 'error');
@@ -4553,6 +4552,37 @@ async function checkAuth() {
             btnShip.dataset.carrier = shippingInfo.carrier || '';
             btnShip.dataset.tracking = shippingInfo.trackingNumber || '';
             btnShip.dataset.shippedDate = shippingInfo.shippedAt ? new Date(shippingInfo.shippedAt).toISOString().slice(0, 10) : '';
+            // Gestionnaire d'événements pour ouvrir la modale d'expédition
+            btnShip.addEventListener('click', async (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                console.log('[orders] Clic bouton Expédier ->', o._id);
+                console.log('[orders] typeof openShipModal:', typeof openShipModal);
+                try {
+                    const carrier = btnShip.dataset.carrier || '';
+                    const tracking = btnShip.dataset.tracking || '';
+                    const shippedDate = btnShip.dataset.shippedDate || '';
+                    console.log('[orders] Appel openShipModal...', { orderId: o._id, carrier, tracking, shippedDate });
+                    await window.openShipModal(o._id, { carrier, tracking, shippedDate });
+                    console.log('[orders] openShipModal appelée avec succès');
+                    // Vérifier que la modale est bien visible, sinon fallback prompts (100% fiable)
+                    setTimeout(() => {
+                        try {
+                            const root = document.getElementById('cpf-modal-root');
+                            const modalPresent = document.querySelector('.cpf-modal') || document.getElementById('order-ship-modal');
+                            const visible = !!(root && getComputedStyle(root).display !== 'none' && (root.childElementCount > 0));
+                            if (!visible && !modalPresent) {
+                                console.warn('[orders] Modale non détectée après appel, activation du fallback prompts');
+                                openShipPromptFlow(o._id, { carrier, tracking, shippedDate }).catch(() => {});
+                            }
+                        } catch (_) {}
+                    }, 120);
+                } catch(err) {
+                    console.error('[orders] openShipModal error ->', err);
+                    console.error('[orders] Stack trace:', err.stack);
+                    showToast('Impossible d\'ouvrir la fenêtre d\'expédition: ' + (err.message || 'Erreur inconnue'), 'error');
+                }
+            });
             // Pastille état Réf technique (si requise)
             const techReq = !!(o.meta && o.meta.technicalRefRequired);
             const engine = (o.meta && o.meta.engineDisplacement ? String(o.meta.engineDisplacement).trim() : '');
@@ -4936,15 +4966,33 @@ async function checkAuth() {
     }
 
     async function ensureShipModalLoaded() {
-        if (shipModalState) return shipModalState;
+        console.log('[ensureShipModalLoaded] Début');
+        // 1) S’assurer que les styles requis existent
+        injectShipModalStyles();
+        // 2) Si déjà chargé, retourner l’état
+        if (shipModalState) {
+            console.log('[ensureShipModalLoaded] Modale déjà chargée');
+            return shipModalState;
+        }
+        // 3) Tenter de charger le partial HTML, sinon fallback inline
         try {
+            console.log('[ensureShipModalLoaded] Fetch du fichier HTML...');
             const res = await fetch('/admin/partials/order-ship-modal.html');
-            if (!res.ok) throw new Error('Chargement de la modale impossible');
-            const html = await res.text();
-            const wrapper = document.createElement('div');
-            wrapper.innerHTML = html.trim();
-            const modal = wrapper.firstElementChild;
-            if (!modal) throw new Error('Modale invalide');
+            console.log('[ensureShipModalLoaded] Réponse fetch', { ok: res.ok, status: res.status });
+            let modal;
+            if (!res.ok) {
+                console.warn('[ensureShipModalLoaded] Partial non disponible, fallback inline');
+                modal = buildInlineShipModalMarkup();
+            } else {
+                const html = await res.text();
+                const wrapper = document.createElement('div');
+                wrapper.innerHTML = html.trim();
+                modal = wrapper.firstElementChild;
+                if (!modal) {
+                    console.warn('[ensureShipModalLoaded] Partial invalide, fallback inline');
+                    modal = buildInlineShipModalMarkup();
+                }
+            }
             document.body.appendChild(modal);
 
             const state = {
@@ -4990,9 +5038,101 @@ async function checkAuth() {
             return shipModalState;
         } catch (error) {
             console.error('[shipModal] chargement impossible', error);
-            showToast("Impossible d'ouvrir la modale d'expédition", 'error');
-            throw error;
+            console.error('[shipModal] Détails erreur:', { message: error.message, stack: error.stack });
+            // Dernier recours: tenter d’injecter une modale inline
+            try {
+                const modal = buildInlineShipModalMarkup();
+                document.body.appendChild(modal);
+                shipModalState = {
+                    modal,
+                    form: modal.querySelector('#order-ship-form'),
+                    orderIdInput: modal.querySelector('#order-ship-id'),
+                    carrierSelect: modal.querySelector('#order-ship-carrier'),
+                    trackingInput: modal.querySelector('#order-ship-tracking'),
+                    dateInput: modal.querySelector('#order-ship-date'),
+                    customWrapper: modal.querySelector('#order-ship-carrier-custom-wrapper'),
+                    customInput: modal.querySelector('#order-ship-carrier-custom'),
+                    submitBtn: modal.querySelector('#order-ship-submit'),
+                    defaultSubmitHtml: modal.querySelector('#order-ship-submit')?.innerHTML || 'Confirmer'
+                };
+                return shipModalState;
+            } catch (e2) {
+                showToast("Impossible d'ouvrir la modale d'expédition: " + (error.message || 'Erreur inconnue'), 'error');
+                return null;
+            }
         }
+    }
+
+    function injectShipModalStyles() {
+        if (document.getElementById('ship-modal-styles')) return;
+        const st = document.createElement('style');
+        st.id = 'ship-modal-styles';
+        st.textContent = `
+        .modal{position:fixed; inset:0; display:flex; align-items:center; justify-content:center; z-index:10000;}
+        .modal[hidden]{display:none!important}
+        .modal__backdrop{position:absolute; inset:0; background:rgba(0,0,0,0.4)}
+        .modal__dialog{position:relative; background:#fff; border-radius:12px; width:min(520px,94vw); max-height:90vh; overflow:auto; box-shadow:0 10px 30px rgba(0,0,0,0.2)}
+        .modal__header,.modal__footer{padding:14px 16px; border-bottom:1px solid #e5e7eb}
+        .modal__footer{border-bottom:none; border-top:1px solid #e5e7eb}
+        .modal__body{padding:16px}
+        .modal__title{margin:0; font-size:18px}
+        .modal__close{background:#f1f5f9; border:1px solid #e2e8f0; border-radius:8px; width:32px; height:32px; display:flex; align-items:center; justify-content:center; cursor:pointer}
+        .form-group{margin-bottom:12px}
+        .form-group--hidden{display:none}
+        `;
+        document.head.appendChild(st);
+    }
+
+    function buildInlineShipModalMarkup() {
+        const wrapper = document.createElement('div');
+        wrapper.innerHTML = `
+        <div class="modal" id="order-ship-modal" role="dialog" aria-modal="true" aria-labelledby="order-ship-title" hidden>
+            <div class="modal__backdrop" data-ship-close></div>
+            <div class="modal__dialog" role="document">
+                <header class="modal__header">
+                    <h2 class="modal__title" id="order-ship-title"><i class="fas fa-truck"></i> Expédier la commande</h2>
+                    <button class="modal__close" type="button" data-ship-close aria-label="Fermer"><i class="fas fa-times"></i></button>
+                </header>
+                <div class="modal__body">
+                    <form id="order-ship-form">
+                        <input type="hidden" id="order-ship-id" name="orderId">
+                        <div class="form-group">
+                            <label for="order-ship-carrier">Transporteur</label>
+                            <select id="order-ship-carrier" name="carrier" required>
+                                <option value="">Choisir…</option>
+                                <option value="colissimo">Colissimo</option>
+                                <option value="chronopost">Chronopost</option>
+                                <option value="dpd">DPD</option>
+                                <option value="ups">UPS</option>
+                                <option value="fedex">FedEx</option>
+                                <option value="gls">GLS</option>
+                                <option value="autre">Autre…</option>
+                            </select>
+                        </div>
+                        <div class="form-group form-group--hidden" id="order-ship-carrier-custom-wrapper">
+                            <label for="order-ship-carrier-custom">Nom du transporteur</label>
+                            <input type="text" id="order-ship-carrier-custom" placeholder="Transporteur" autocomplete="off">
+                        </div>
+                        <div class="form-group">
+                            <label for="order-ship-tracking">Numéro de suivi</label>
+                            <input type="text" id="order-ship-tracking" name="tracking" placeholder="Ex: 8L000000000" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="order-ship-date">Date d'expédition</label>
+                            <input type="date" id="order-ship-date" name="shippedDate">
+                            <small>Par défaut, aujourd'hui.</small>
+                        </div>
+                    </form>
+                </div>
+                <footer class="modal__footer">
+                    <button class="btn-secondary" type="button" data-ship-close>Annuler</button>
+                    <button class="btn-primary" type="button" id="order-ship-submit">
+                        <i class="fas fa-paper-plane"></i> Confirmer l'expédition
+                    </button>
+                </footer>
+            </div>
+        </div>`;
+        return wrapper.firstElementChild;
     }
 
     function closeShipModal() {
@@ -5057,23 +5197,178 @@ async function checkAuth() {
     }
 
     async function openShipModal(orderId, options = {}) {
+        console.log('[openShipModal] Début (overlay version)', { orderId, options });
         try {
-            const state = await ensureShipModalLoaded();
-            if (!state) return;
-            if (state.orderIdInput) state.orderIdInput.value = orderId;
-            setCarrierField(state, options.carrier || '');
-            toggleCarrierCustomField(state, state.carrierSelect ? state.carrierSelect.value : '');
-            if (state.trackingInput) state.trackingInput.value = options.tracking || '';
-            setDefaultShipDate(state.dateInput, options.shippedDate || '');
-            state.modal.removeAttribute('hidden');
-            state.modal.classList.add('modal--open');
-            document.body.classList.add('modal-open');
-            const focusTarget = state.trackingInput || state.carrierSelect;
-            setTimeout(() => { try { focusTarget?.focus(); } catch (_) {} }, 40);
+            const token = window.authToken || localStorage.getItem('authToken');
+            if (!token) { showToast('Session expirée, reconnectez-vous', 'error'); logout(); return; }
+            const root = ensureModalRoot();
+            root.style.position = 'fixed';
+            root.style.top = '0';
+            root.style.left = '0';
+            root.style.right = '0';
+            root.style.bottom = '0';
+            root.style.zIndex = '10000';
+            root.style.backgroundColor = 'rgba(0,0,0,0.35)';
+            root.style.display = 'flex';
+            root.style.alignItems = 'center';
+            root.style.justifyContent = 'center';
+            root.innerHTML = '';
+            const modal = document.createElement('div');
+            modal.className = 'cpf-modal';
+            modal.style.maxWidth = '560px';
+            modal.style.width = '95vw';
+            modal.style.maxHeight = '90vh';
+            modal.style.display = 'flex';
+            modal.style.flexDirection = 'column';
+            modal.style.background = '#ffffff';
+            modal.style.borderRadius = '12px';
+            modal.style.boxShadow = '0 12px 30px rgba(0,0,0,0.25)';
+            modal.innerHTML = `
+              <div class="cpf-modal-header co-modal-header">
+                <div class="icon"><i class="fas fa-truck"></i></div>
+                <div class="cpf-modal-title">
+                  <span>Expédier la commande</span>
+                  <small id="ship-header-subtitle">Renseignez le transporteur et le numéro de suivi.</small>
+                </div>
+                <button type="button" class="cpf-modal-close" data-action="close" aria-label="Fermer"><i class="fas fa-times"></i></button>
+              </div>
+              <div class="cpf-modal-body" style="flex:1; overflow:auto; padding:20px; background:#f8fafc;">
+                <div class="co-card" style="background:#fff; border-radius:14px; padding:16px; box-shadow:0 8px 24px rgba(15,23,42,0.06); border:1px solid rgba(148,163,184,0.15); display:flex; flex-direction:column; gap:12px;">
+                  <div class="co-grid" style="display:grid; gap:12px; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr));">
+                    <div class="co-field"><label for="ship-carrier">Transporteur</label>
+                      <select id="ship-carrier" style="height:40px; border:1px solid rgba(148,163,184,0.6); border-radius:10px; padding:0 12px; background:#fff;">
+                        <option value="">Choisir…</option>
+                        <option value="colissimo">Colissimo</option>
+                        <option value="chronopost">Chronopost</option>
+                        <option value="dpd">DPD</option>
+                        <option value="ups">UPS</option>
+                        <option value="fedex">FedEx</option>
+                        <option value="gls">GLS</option>
+                        <option value="autre">Autre…</option>
+                      </select>
+                    </div>
+                    <div class="co-field" id="ship-carrier-custom-wrap" style="display:none;">
+                      <label for="ship-carrier-custom">Nom du transporteur</label>
+                      <input id="ship-carrier-custom" type="text" placeholder="Transporteur" style="height:40px; border:1px solid rgba(148,163,184,0.6); border-radius:10px; padding:0 12px; background:#fff;" />
+                    </div>
+                    <div class="co-field"><label for="ship-tracking">N° de suivi</label>
+                      <input id="ship-tracking" type="text" placeholder="Ex: 8L000000000" style="height:40px; border:1px solid rgba(148,163,184,0.6); border-radius:10px; padding:0 12px; background:#fff;" />
+                    </div>
+                    <div class="co-field"><label for="ship-date">Date d’expédition</label>
+                      <input id="ship-date" type="date" style="height:40px; border:1px solid rgba(148,163,184,0.6); border-radius:10px; padding:0 12px; background:#fff;" />
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="cpf-modal-actions" style="position:sticky; bottom:0; left:0; padding:16px 20px; background:#fff; border-top:1px solid rgba(148,163,184,0.2); display:flex; gap:10px; justify-content:flex-end;">
+                <button class="cpf-btn cpf-btn-secondary" data-action="cancel">Annuler</button>
+                <button class="cpf-btn cpf-btn-primary" data-action="confirm">Confirmer l’expédition</button>
+              </div>
+            `;
+            root.appendChild(modal);
+
+            // Pré-remplir si options
+            const carrierSel = modal.querySelector('#ship-carrier');
+            const carrierCustom = modal.querySelector('#ship-carrier-custom');
+            const carrierCustomWrap = modal.querySelector('#ship-carrier-custom-wrap');
+            const trackingInp = modal.querySelector('#ship-tracking');
+            const dateInp = modal.querySelector('#ship-date');
+            if (carrierSel && options.carrier) carrierSel.value = options.carrier;
+            if (trackingInp && options.tracking) trackingInp.value = options.tracking;
+            if (dateInp) {
+                const iso = (options.shippedDate && options.shippedDate.length === 10) ? options.shippedDate : new Date().toISOString().slice(0,10);
+                dateInp.value = iso;
+            }
+            const toggleCustom = (val) => {
+                const show = (val === 'autre');
+                if (carrierCustomWrap) carrierCustomWrap.style.display = show ? 'block' : 'none';
+                if (!show && carrierCustom) carrierCustom.value = '';
+            };
+            if (carrierSel) carrierSel.addEventListener('change', () => toggleCustom(carrierSel.value));
+            toggleCustom(carrierSel ? carrierSel.value : '');
+
+            const onCleanup = () => { root.style.display = 'none'; root.innerHTML=''; };
+            const onOverlayClick = (e) => { if (e.target === root) onCleanup(); };
+            root.addEventListener('click', onOverlayClick);
+            const closeBtn = modal.querySelector('[data-action="close"]');
+            const cancelBtn = modal.querySelector('[data-action="cancel"]');
+            const confirmBtn = modal.querySelector('[data-action="confirm"]');
+            if (closeBtn) closeBtn.addEventListener('click', onCleanup);
+            if (cancelBtn) cancelBtn.addEventListener('click', onCleanup);
+
+            if (confirmBtn) confirmBtn.addEventListener('click', async () => {
+                try {
+                    const selected = carrierSel ? carrierSel.value.trim() : '';
+                    const carrier = (selected === 'autre') ? (carrierCustom?.value || '').trim() : selected;
+                    const tracking = (trackingInp?.value || '').trim();
+                    const shipped = (dateInp?.value || '').trim();
+                    if (!carrier) { showToast('Merci de renseigner un transporteur', 'error'); return; }
+                    if (!tracking) { showToast('Merci de renseigner un numéro de suivi', 'error'); return; }
+                    confirmBtn.disabled = true; const prev = confirmBtn.innerHTML; confirmBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> …';
+                    const payload = { carrier, trackingNumber: tracking };
+                    if (shipped) payload.shippedAt = `${shipped}T00:00:00.000Z`;
+                    const res = await fetch(`/api/admin/orders/${encodeURIComponent(orderId)}/ship`, { method:'POST', headers:{ 'Content-Type':'application/json', 'Authorization': `Basic ${token}` }, body: JSON.stringify(payload) });
+                    const data = await res.json().catch(() => ({}));
+                    if (!res.ok || !data.success) throw new Error(data.message || `Erreur ${res.status}`);
+                    showToast('Commande marquée comme expédiée', 'success');
+                    onCleanup();
+                    try { await loadOrdersList(window.__ordersCurrentPage || 1); } catch(_){ }
+                } catch(err) {
+                    console.error('[orders] ship confirm error', err);
+                    showToast(err.message || 'Erreur lors de l\'expédition', 'error');
+                } finally {
+                    if (confirmBtn) { confirmBtn.disabled = false; confirmBtn.innerHTML = '<i class="fas fa-paper-plane"></i> Confirmer l\'expédition'; }
+                }
+            });
         } catch (error) {
-            console.error('[shipModal] ouverture impossible', error);
+            console.error('[shipModal] ouverture impossible (overlay)', error);
+            // Fallback 100% fiable via prompts
+            try {
+                await openShipPromptFlow(orderId, options);
+                return;
+            } catch(e2) {
+                showToast('Impossible d\'ouvrir la fenêtre d\'expédition', 'error');
+            }
         }
     }
+
+    async function openShipPromptFlow(orderId, defaults = {}) {
+        const token = window.authToken || localStorage.getItem('authToken');
+        if (!token) { showToast('Session expirée, reconnectez-vous', 'error'); logout(); return; }
+        const carriers = ['colissimo','chronopost','dpd','ups','fedex','gls','autre'];
+        const pick = (label, def='') => {
+            const v = window.prompt(label + (def?` (défaut: ${def})`:'') + ' :', def || '');
+            return (v === null) ? '' : String(v).trim();
+        };
+        let carrier = (defaults.carrier || '').trim();
+        if (!carrier) carrier = pick('Transporteur (ex: colissimo, ups, autre)', carriers[0]);
+        if (!carrier) throw new Error('Transporteur requis');
+        if (!carriers.includes(carrier.toLowerCase())) {
+            // considérer que c’est un nom custom si non listé
+            carrier = carrier.toLowerCase();
+        }
+        if (carrier === 'autre') {
+            const custom = pick('Nom du transporteur');
+            if (!custom) throw new Error('Nom du transporteur requis');
+            carrier = custom;
+        }
+        let tracking = (defaults.tracking || '').trim();
+        if (!tracking) tracking = pick('Numéro de suivi');
+        if (!tracking) throw new Error('Numéro de suivi requis');
+        const today = new Date().toISOString().slice(0,10);
+        let shippedDate = (defaults.shippedDate || '').trim();
+        if (!shippedDate) shippedDate = pick('Date d\'expédition (YYYY-MM-DD)', today) || today;
+        const payload = { carrier, trackingNumber: tracking };
+        if (shippedDate && shippedDate.length === 10) payload.shippedAt = `${shippedDate}T00:00:00.000Z`;
+        const res = await fetch(`/api/admin/orders/${encodeURIComponent(orderId)}/ship`, { method:'POST', headers:{ 'Content-Type':'application/json', 'Authorization': `Basic ${token}` }, body: JSON.stringify(payload) });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.success) throw new Error(data.message || `Erreur ${res.status}`);
+        showToast('Commande marquée comme expédiée', 'success');
+        try { await loadOrdersList(window.__ordersCurrentPage || 1); } catch(_){ }
+    }
+
+    // Exposer globalement pour accès depuis d'autres sections
+    window.openShipModal = openShipModal;
 
     function buildShipPayload(state) {
         if (!state) return null;
@@ -6175,14 +6470,52 @@ async function checkAuth() {
     
     // Modale Expédition (transporteur + n° de suivi)
     function openShipModal(orderId) {
-        if (!authToken) return logout();
+        console.log('[openShipModal] Début de la fonction, orderId:', orderId);
+        console.log('[openShipModal] authToken existe?', !!authToken, 'valeur:', authToken ? 'OUI' : 'NON');
+        if (!authToken) {
+            console.error('[openShipModal] Pas de authToken, sortie de la fonction');
+            return logout();
+        }
+        console.log('[openShipModal] Appel ensureModalRoot()');
         const root = ensureModalRoot();
+        console.log('[openShipModal] root récupéré:', root);
+        if (!root) {
+            console.error('[openShipModal] ensureModalRoot a retourné null/undefined');
+            return;
+        }
+        // S'assurer que l'overlay est le dernier enfant du body (au plus haut dans l'empilement DOM)
+        try { if (root.parentNode !== document.body || document.body.lastElementChild !== root) document.body.appendChild(root); } catch (_) {}
+        // Forcer les styles d’overlay (au cas où une règle CSS externe les masque)
+        root.style.position = 'fixed';
+        root.style.top = '0';
+        root.style.left = '0';
+        root.style.right = '0';
+        root.style.bottom = '0';
+        root.style.zIndex = '100000';
+        root.style.backgroundColor = 'rgba(0,0,0,0.35)';
         root.style.display = 'flex';
+        root.style.alignItems = 'center';
+        root.style.justifyContent = 'center';
+        root.style.pointerEvents = 'auto';
         root.innerHTML = '';
+        console.log('[openShipModal] Création de la modale...');
         const modal = document.createElement('div');
         modal.className = 'cpf-modal';
+        // Styles de la boîte modale pour garantir sa visibilité
         modal.style.maxWidth = '520px';
         modal.style.width = '95vw';
+        modal.style.maxHeight = '90vh';
+        modal.style.display = 'flex';
+        modal.style.flexDirection = 'column';
+        modal.style.background = '#ffffff';
+        modal.style.borderRadius = '12px';
+        modal.style.boxShadow = '0 20px 50px rgba(0,0,0,0.25)';
+        try {
+            modal.style.setProperty('z-index', '2147483647', 'important');
+            modal.style.setProperty('visibility', 'visible', 'important');
+            modal.style.setProperty('opacity', '1', 'important');
+            modal.style.setProperty('transform', 'none', 'important');
+        } catch(_) {}
         modal.innerHTML = `
           <div class="cpf-modal-header">
             <div class="icon"><i class="fas fa-truck"></i></div>
@@ -6194,6 +6527,10 @@ async function checkAuth() {
               .ship-field label { font-size:12px; color:#374151; }
               .ship-field input, .ship-field select { height:36px; border:1px solid #d1d5db; border-radius:8px; padding:6px 10px; }
               .ship-field input:focus, .ship-field select:focus { outline:none; border-color:#93c5fd; box-shadow:0 0 0 3px rgba(59,130,246,0.15); }
+              .cpf-modal-header { align-items:center; gap:12px; border-bottom:1px solid rgba(148,163,184,0.25); padding:16px 20px; background:linear-gradient(135deg,#0ea5e9 0%,#2563eb 100%); color:#fff; border-top-left-radius:12px; border-top-right-radius:12px; }
+              .cpf-modal-title { font-size:18px; font-weight:600; }
+              .cpf-modal-body { padding:16px 20px; background:#f8fafc; }
+              .cpf-modal-actions { padding:12px 16px; display:flex; gap:10px; justify-content:flex-end; border-top:1px solid rgba(148,163,184,0.2); background:#fff; border-bottom-left-radius:12px; border-bottom-right-radius:12px; }
             </style>
             <div class="ship-field">
               <label for="ship-carrier">Transporteur</label>
@@ -6210,6 +6547,18 @@ async function checkAuth() {
             <button class="cpf-btn cpf-btn-primary" data-action="confirm">Expédier</button>
           </div>
         `;
+        // Ajout au DOM et log de vérification des dimensions
+        root.appendChild(modal);
+        try {
+            const r1 = root.getBoundingClientRect();
+            const r2 = modal.getBoundingClientRect();
+            console.log('[openShipModal] root rect:', r1);
+            console.log('[openShipModal] modal rect:', r2);
+            const csRoot = getComputedStyle(root);
+            const csModal = getComputedStyle(modal);
+            console.log('[openShipModal] root computed display/opacity/visibility:', csRoot.display, csRoot.opacity, csRoot.visibility);
+            console.log('[openShipModal] modal computed display/opacity/visibility:', csModal.display, csModal.opacity, csModal.visibility);
+        } catch (_) {}
         const onCleanup = () => { root.style.display = 'none'; root.innerHTML=''; root.removeEventListener('click', onOverlayClick); };
         const onOverlayClick = (e) => { if (e.target === root) onCleanup(); };
         root.addEventListener('click', onOverlayClick);
@@ -6288,6 +6637,35 @@ async function checkAuth() {
           }
         });
     }
+
+    // Exposer la fonction openShipModal pour qu'elle soit accessible depuis les boutons
+    window.openShipModal = openShipModal;
+
+    // Fallback sûr si la modale ne s'affiche pas (ex: conflit de styles, extensions, etc.)
+    // Utilise des "prompts" pour garantir l'opération d'expédition
+    async function openShipPromptFlow(orderId, defaults = {}) {
+        try {
+            const d = defaults || {};
+            const carrier = prompt('Transporteur (ex: Colissimo, Chronopost, DHL…):', d.carrier || '');
+            if (carrier === null) return; // annulé
+            const trackingNumber = prompt('Numéro de suivi (ex: 8L123456789FR):', d.tracking || '');
+            if (trackingNumber === null) return; // annulé
+            const token = window.authToken || localStorage.getItem('authToken');
+            if (!token) { try { return logout(); } catch(_) { return; } }
+            const r = await fetch(`/api/admin/orders/${encodeURIComponent(orderId)}/ship`, {
+                method: 'POST',
+                headers: { 'Authorization': `Basic ${token}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ carrier: String(carrier||'').trim(), trackingNumber: String(trackingNumber||'').trim() })
+            });
+            const data = await r.json().catch(() => ({}));
+            if (!r.ok || !data.success) throw new Error(data.message || 'Échec expédition');
+            try { showToast('Commande expédiée', 'success'); } catch(_) {}
+            try { await loadOrdersList(1); } catch(_) {}
+        } catch (e) {
+            try { showToast(e.message || 'Erreur expédition', 'error'); } catch(_) {}
+        }
+    }
+    try { window.openShipPromptFlow = openShipPromptFlow; } catch(_) {}
 
     function handleHashRoute() {
         const hash = window.location.hash;
@@ -9921,6 +10299,33 @@ function ensureModalRoot() {
         root = document.createElement('div');
         root.id = 'cpf-modal-root';
         document.body.appendChild(root);
+    }
+    // Appliquer systématiquement les styles d'overlay avec priorité maximale
+    try {
+        root.style.setProperty('position', 'fixed', 'important');
+        root.style.setProperty('top', '0', 'important');
+        root.style.setProperty('left', '0', 'important');
+        root.style.setProperty('right', '0', 'important');
+        root.style.setProperty('bottom', '0', 'important');
+        root.style.setProperty('z-index', '2147483647', 'important');
+        root.style.setProperty('background-color', 'rgba(0,0,0,0.35)', 'important');
+        root.style.setProperty('align-items', 'center', 'important');
+        root.style.setProperty('justify-content', 'center', 'important');
+        if (!root.style.display) root.style.display = 'none';
+        root.style.setProperty('pointer-events', 'auto', 'important');
+    } catch(_) {
+        // Fallback si setProperty indisponible
+        root.style.position = 'fixed';
+        root.style.top = '0';
+        root.style.left = '0';
+        root.style.right = '0';
+        root.style.bottom = '0';
+        root.style.zIndex = '2147483647';
+        root.style.backgroundColor = 'rgba(0,0,0,0.35)';
+        root.style.alignItems = 'center';
+        root.style.justifyContent = 'center';
+        if (!root.style.display) root.style.display = 'none';
+        root.style.pointerEvents = 'auto';
     }
     return root;
 }

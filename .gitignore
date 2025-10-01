@@ -16,3 +16,6 @@ uploads/
 # Logs
 *.log
 logs/
+
+# Secrets backups
+.env.*

@@ -2606,6 +2606,12 @@ app.get('/api/admin/notifications', authenticateAdmin, async (req, res) => {
   try {
     const userId = req.auth && req.auth.id;
     if (!userId) return res.status(401).json({ success: false, message: 'Non authentifié' });
+    
+    // Si c'est un compte ENV (ex: env-admin), retourner une liste vide au lieu d'une erreur
+    if (req.auth.type === 'env') {
+      return res.json({ success: true, notifications: [], unreadCount: 0 });
+    }
+    
     const limit = Math.min(parseInt(req.query.limit, 10) || 20, 100);
     const notifications = await Notification.find({ userId })
       .sort({ isRead: 1, createdAt: -1 })
@@ -2624,6 +2630,12 @@ app.post('/api/admin/notifications/mark-read', authenticateAdmin, async (req, re
   try {
     const userId = req.auth && req.auth.id;
     if (!userId) return res.status(401).json({ success: false, message: 'Non authentifié' });
+    
+    // Si c'est un compte ENV (ex: env-admin), retourner succès sans rien faire
+    if (req.auth.type === 'env') {
+      return res.json({ success: true, unreadCount: 0 });
+    }
+    
     const { ids = [], all = false } = req.body || {};
     if (!all && (!Array.isArray(ids) || ids.length === 0)) {
       return res.status(400).json({ success: false, message: 'Aucune notification à marquer comme lue' });
