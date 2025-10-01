@@ -14,15 +14,114 @@
                 td.appendChild(bar);
                 tr.appendChild(td);
             }
+    // Exposer pour les appels différés
+    try { window.resolveCurrentOrderId = resolveCurrentOrderId; } catch(_) {}
+    
+    // Résout l'ID de commande courant depuis différentes sources
+    function resolveCurrentOrderId(fromEl) {
+        let orderId = '';
+        try { orderId = (window.__currentOrderId || '').trim(); } catch(_) {}
+        if (!orderId) {
+            try {
+                const htmlId = document.documentElement && document.documentElement.getAttribute('data-current-order-id');
+                if (htmlId) orderId = htmlId;
+            } catch(_) {}
+        }
+        if (!orderId) {
+            try {
+                const hidden = document.getElementById('current-order-id');
+                if (hidden && hidden.value) orderId = hidden.value;
+            } catch(_) {}
+        }
+        if (!orderId) {
+            try {
+                const last = localStorage.getItem('lastOrderId');
+                if (last) orderId = last;
+            } catch(_) {}
+        }
+        if (!orderId && fromEl) {
+            const row = fromEl.closest && fromEl.closest('tr.order-row');
+            if (row && row.dataset && row.dataset.id) orderId = row.dataset.id;
+        }
+        if (!orderId) {
+            const checked = document.querySelector('input.order-select:checked');
+            if (checked && checked.getAttribute('data-id')) orderId = checked.getAttribute('data-id');
+        }
+        if (!orderId && fromEl) {
+            const ctx = fromEl.closest && fromEl.closest('[data-order-id]');
+            if (ctx && ctx.getAttribute('data-order-id')) orderId = ctx.getAttribute('data-order-id');
+        }
+        if (!orderId) {
+            const anyWrapper = document.querySelector('.order-status-wrapper[data-order-id]');
+            if (anyWrapper) orderId = anyWrapper.getAttribute('data-order-id');
+        }
+        if (!orderId) {
+            const firstRow = document.querySelector('#orders-list tr.order-row');
+            if (firstRow && firstRow.dataset && firstRow.dataset.id) orderId = firstRow.dataset.id;
+        }
+        return (orderId || '').trim();
+    }
+
+// Hook fetch: mémoriser automatiquement l'orderId lorsqu'une API de commande est appelée
+(function hookFetchForOrderId() {
+    if (window.__hookedFetchForOrderId) return;
+    const origFetch = window.fetch ? window.fetch.bind(window) : null;
+    if (!origFetch) return;
+    window.fetch = function(input, init) {
+        try {
+            const url = (typeof input === 'string') ? input : (input && input.url ? input.url : '');
+            if (url) {
+                const m = url.match(/\/api\/admin\/orders\/([^\/?#]+)/);
+                if (m && m[1]) {
+                    try { setCurrentOrderContext(decodeURIComponent(m[1])); } catch(_) {}
+                }
+            }
+        } catch(_) {}
+        return origFetch(input, init);
+    };
+    window.__hookedFetchForOrderId = true;
+})();
             tbody.appendChild(tr);
         }
     }
 
-    // Modale d'édition de commande (client + adresses)
-    function openEditOrderModal(orderId) {
-        if (!authToken) return logout();
+// Fournit le conteneur de modale (créé si nécessaire)
+function ensureModalRoot() {
+    let root = document.getElementById('cpf-modal-root');
+    if (!root) {
+        root = document.createElement('div');
+        root.id = 'cpf-modal-root';
+        root.style.display = 'none';
+        // Assure un overlay fiable et visible au-dessus de tout
+        root.style.position = 'fixed';
+        root.style.top = '0';
+        root.style.left = '0';
+        root.style.right = '0';
+        root.style.bottom = '0';
+        root.style.zIndex = '9999';
+        root.style.backgroundColor = 'rgba(0,0,0,0.35)';
+        root.style.alignItems = 'center';
+        root.style.justifyContent = 'center';
+        document.body.appendChild(root);
+    }
+    return root;
+}
+function openEditOrderModal(orderId) {
+        console.debug('[orders] openEditOrderModal: start for', orderId);
+        const token = window.authToken || localStorage.getItem('authToken');
+        if (!token) { try { return logout(); } catch(_) { return; } }
         const root = ensureModalRoot();
+        // S’assure que l’overlay est correctement positionné et au-dessus de tout à chaque ouverture
+        root.style.position = 'fixed';
+        root.style.top = '0';
+        root.style.left = '0';
+        root.style.right = '0';
+        root.style.bottom = '0';
+        root.style.zIndex = '9999';
+        root.style.backgroundColor = 'rgba(0,0,0,0.35)';
         root.style.display = 'flex';
+        root.style.alignItems = 'center';
+        root.style.justifyContent = 'center';
         root.innerHTML = '';
         const modal = document.createElement('div');
         modal.className = 'cpf-modal';
@@ -31,61 +130,102 @@
         modal.style.maxHeight = '90vh';
         modal.style.display = 'flex';
         modal.style.flexDirection = 'column';
+        modal.style.background = '#ffffff';
+        modal.style.borderRadius = '10px';
+        modal.style.boxShadow = '0 10px 30px rgba(0,0,0,0.25)';
         modal.innerHTML = `
-          <div class="cpf-modal-header">
+          <div class="cpf-modal-header co-modal-header">
             <div class="icon"><i class="fas fa-pen"></i></div>
-            <div class="cpf-modal-title">Modifier la commande</div>
+            <div class="cpf-modal-title">
+              <span>Modifier la commande</span>
+              <small id="ed-header-subtitle">Mettez à jour les informations essentielles avant validation.</small>
+            </div>
+            <button type="button" class="cpf-modal-close" data-action="close" aria-label="Fermer la fenêtre"><i class="fas fa-times"></i></button>
           </div>
           <div class="cpf-modal-body co-order-modal-body">
             <style>
-              .co-order-modal-body { flex: 1; overflow: auto; padding-right: 4px; }
-              .co-grid-2 { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
-              .co-section { margin-top:10px; }
-              .co-section h4 { margin:6px 0; font-size:14px; }
-              .co-inline { display:flex; align-items:center; gap:8px; }
-              .co-field { display:flex; flex-direction:column; gap:4px; }
-              .co-field label { font-size:12px; color:#374151; }
-              .co-field input, .co-field select { height:36px; border:1px solid #d1d5db; border-radius:8px; padding:6px 10px; }
-              .co-field input:focus, .co-field select:focus { outline:none; border-color:#93c5fd; box-shadow:0 0 0 3px rgba(59,130,246,0.15); }
-              .quick-date { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
-              .quick-date .qd, .quick-date .qd-clear { background:#f9fafb; border:1px solid #d1d5db; border-radius:8px; height:32px; padding:0 8px; cursor:pointer; }
-              @media (max-width: 640px) { .co-grid-2 { grid-template-columns: 1fr; } }
+              .co-order-modal-body { flex:1; overflow:auto; padding:20px; background:#f8fafc; }
+              .co-modal-header { align-items:center; gap:12px; border-bottom:1px solid rgba(148,163,184,0.25); padding:18px 24px; background:linear-gradient(135deg,#0ea5e9 0%,#2563eb 100%); color:#fff; }
+              .co-modal-header .cpf-modal-title span { font-size:20px; font-weight:600; }
+              .co-modal-header .cpf-modal-title small { display:block; margin-top:4px; font-size:13px; opacity:0.85; }
+              .co-modal-header .icon { display:flex; width:48px; height:48px; border-radius:16px; background:rgba(255,255,255,0.2); align-items:center; justify-content:center; font-size:20px; }
+              .cpf-modal-close { background:rgba(15,23,42,0.2); border:none; color:#fff; width:36px; height:36px; border-radius:12px; display:flex; align-items:center; justify-content:center; cursor:pointer; transition:background 0.2s ease; }
+              .cpf-modal-close:hover { background:rgba(15,23,42,0.35); }
+              .co-summary { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:18px; }
+              .co-chip { display:inline-flex; align-items:center; gap:6px; padding:6px 12px; border-radius:999px; background:#e2e8f0; color:#1f2937; font-size:13px; font-weight:500; }
+              .co-chip.is-status { background:#fef3c7; color:#92400e; }
+              .co-chip.is-provider { background:#ede9fe; color:#5b21b6; }
+              .co-chip.is-date { background:#d1fae5; color:#065f46; }
+              .co-layout { display:grid; gap:18px; grid-template-columns:repeat(auto-fit, minmax(300px, 1fr)); }
+              .co-card { background:#fff; border-radius:14px; padding:20px; box-shadow:0 10px 30px rgba(15,23,42,0.08); border:1px solid rgba(148,163,184,0.15); display:flex; flex-direction:column; gap:16px; }
+              .co-card-header { display:flex; align-items:center; gap:10px; font-weight:600; color:#0f172a; font-size:15px; }
+              .co-card-header i { color:#2563eb; }
+              .co-grid { display:grid; gap:12px; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); }
+              .co-field { display:flex; flex-direction:column; gap:6px; }
+              .co-field label { font-size:13px; font-weight:500; color:#475569; }
+              .co-field input, .co-field select { height:40px; border:1px solid rgba(148,163,184,0.6); border-radius:10px; padding:0 12px; background:#f8fafc; transition:all 0.15s ease; }
+              .co-field input:focus, .co-field select:focus { outline:none; border-color:#2563eb; box-shadow:0 0 0 3px rgba(37,99,235,0.15); background:#fff; }
+              .co-checkbox { display:flex; align-items:center; gap:10px; padding:10px 12px; border-radius:10px; background:#f1f5f9; border:1px solid rgba(148,163,184,0.25); }
+              .co-checkbox input { width:18px; height:18px; }
+              .co-quick-date { display:flex; flex-wrap:wrap; gap:8px; }
+              .co-quick-date button { height:34px; padding:0 12px; border-radius:10px; border:1px solid rgba(148,163,184,0.6); background:#fff; color:#1e293b; font-size:13px; cursor:pointer; transition:all 0.15s ease; }
+              .co-quick-date button:hover { background:#2563eb; color:#fff; border-color:#2563eb; }
+              .co-quick-date .qd-clear { background:#fee2e2; color:#b91c1c; border-color:rgba(248,113,113,0.6); }
+              .co-quick-date .qd-clear:hover { background:#b91c1c; color:#fff; border-color:#b91c1c; }
+              .co-field textarea { min-height:96px; resize:vertical; border:1px solid rgba(148,163,184,0.6); border-radius:10px; padding:10px 12px; background:#f8fafc; transition:all 0.15s ease; }
+              .co-field textarea:focus { outline:none; border-color:#2563eb; box-shadow:0 0 0 3px rgba(37,99,235,0.15); background:#fff; }
+              .cpf-modal-actions { position:sticky; bottom:0; left:0; padding:16px 24px; background:rgba(248,250,252,0.95); border-top:1px solid rgba(148,163,184,0.2); display:flex; flex-wrap:wrap; gap:12px; align-items:center; justify-content:space-between; }
+              .cpf-modal-actions__buttons { display:flex; gap:10px; margin-left:auto; }
+              .cpf-btn-secondary { background:#f1f5f9; color:#0f172a; }
+              .cpf-btn-secondary:hover { background:#e2e8f0; }
+              .co-error { display:none; padding:10px 14px; border-radius:10px; background:#fee2e2; color:#991b1b; border:1px solid rgba(220,38,38,0.3); font-size:13px; font-weight:500; }
+              @media (max-width: 720px) {
+                .co-order-modal-body { padding:16px; }
+                .cpf-modal-actions { flex-direction:column; align-items:stretch; }
+                .cpf-modal-actions__buttons { width:100%; justify-content:flex-end; }
+              }
             </style>
-            <div class="co-section">
-              <h4>Coordonnées de facturation</h4>
-              <div class="co-grid-2">
-                <div class="co-field"><label for="ed-bill-name">Nom complet</label><input id="ed-bill-name" type="text" /></div>
-                <div class="co-field"><label for="ed-bill-company">Société (optionnel)</label><input id="ed-bill-company" type="text" /></div>
-                <div class="co-field"><label for="ed-bill-email">Email</label><input id="ed-bill-email" type="email" /></div>
-                <div class="co-field"><label for="ed-bill-phone">Téléphone</label><input id="ed-bill-phone" type="text" /></div>
-                <div class="co-field"><label for="ed-bill-address1">Adresse 1</label><input id="ed-bill-address1" type="text" /></div>
-                <div class="co-field"><label for="ed-bill-address2">Adresse 2</label><input id="ed-bill-address2" type="text" /></div>
-                <div class="co-field"><label for="ed-bill-city">Ville</label><input id="ed-bill-city" type="text" /></div>
-                <div class="co-field"><label for="ed-bill-postcode">Code postal</label><input id="ed-bill-postcode" type="text" /></div>
-                <div class="co-field"><label for="ed-bill-country">Pays</label><input id="ed-bill-country" type="text" /></div>
-              </div>
+            <div class="co-summary">
+              <span class="co-chip" id="ed-summary-number">Commande</span>
+              <span class="co-chip is-status" id="ed-summary-status">Statut</span>
+              <span class="co-chip is-provider" id="ed-summary-provider">Source</span>
+              <span class="co-chip is-date" id="ed-summary-updated">Mise à jour</span>
             </div>
-            <div class="co-section">
-              <h4>Adresse de livraison</h4>
-              <div class="co-inline" style="margin-bottom:6px;">
-                <input id="ed-ship-same" type="checkbox" />
-                <label for="ed-ship-same">Identique à la facturation</label>
-              </div>
-              <div class="co-grid-2" id="ed-ship-grid">
-                <div class="co-field"><label for="ed-ship-name">Nom complet</label><input id="ed-ship-name" type="text" /></div>
-                <div class="co-field"><label for="ed-ship-company">Société (optionnel)</label><input id="ed-ship-company" type="text" /></div>
-                <div class="co-field"><label for="ed-ship-phone">Téléphone</label><input id="ed-ship-phone" type="text" /></div>
-                <div class="co-field"><label for="ed-ship-address1">Adresse 1</label><input id="ed-ship-address1" type="text" /></div>
-                <div class="co-field"><label for="ed-ship-address2">Adresse 2</label><input id="ed-ship-address2" type="text" /></div>
-                <div class="co-field"><label for="ed-ship-city">Ville</label><input id="ed-ship-city" type="text" /></div>
-                <div class="co-field"><label for="ed-ship-postcode">Code postal</label><input id="ed-ship-postcode" type="text" /></div>
-                <div class="co-field"><label for="ed-ship-country">Pays</label><input id="ed-ship-country" type="text" /></div>
-              </div>
-              <div class="co-field" style="margin-top:6px;">
-                <label for="ed-estimated">Livraison estimée (optionnel)</label>
-                <div class="co-inline">
+            <div class="co-layout">
+              <section class="co-card">
+                <header class="co-card-header"><i class="fas fa-user-circle"></i><span>Coordonnées de facturation</span></header>
+                <div class="co-grid">
+                  <div class="co-field"><label for="ed-bill-name">Nom complet</label><input id="ed-bill-name" type="text" placeholder="Nom et prénom" /></div>
+                  <div class="co-field"><label for="ed-bill-company">Société (optionnel)</label><input id="ed-bill-company" type="text" placeholder="Entreprise" /></div>
+                  <div class="co-field"><label for="ed-bill-email">Email</label><input id="ed-bill-email" type="email" placeholder="client@mail.fr" /></div>
+                  <div class="co-field"><label for="ed-bill-phone">Téléphone</label><input id="ed-bill-phone" type="text" placeholder="06 12 34 56 78" /></div>
+                  <div class="co-field"><label for="ed-bill-address1">Adresse 1</label><input id="ed-bill-address1" type="text" placeholder="Rue, numéro" /></div>
+                  <div class="co-field"><label for="ed-bill-address2">Adresse 2</label><input id="ed-bill-address2" type="text" placeholder="Complément" /></div>
+                  <div class="co-field"><label for="ed-bill-city">Ville</label><input id="ed-bill-city" type="text" placeholder="Ville" /></div>
+                  <div class="co-field"><label for="ed-bill-postcode">Code postal</label><input id="ed-bill-postcode" type="text" placeholder="75000" /></div>
+                  <div class="co-field"><label for="ed-bill-country">Pays</label><input id="ed-bill-country" type="text" placeholder="France" /></div>
+                </div>
+              </section>
+              <section class="co-card">
+                <header class="co-card-header"><i class="fas fa-truck"></i><span>Livraison & suivi</span></header>
+                <div class="co-checkbox">
+                  <input id="ed-ship-same" type="checkbox" />
+                  <label for="ed-ship-same">Utiliser exactement les mêmes informations que la facturation</label>
+                </div>
+                <div class="co-grid" id="ed-ship-grid">
+                  <div class="co-field"><label for="ed-ship-name">Nom complet</label><input id="ed-ship-name" type="text" placeholder="Nom et prénom" /></div>
+                  <div class="co-field"><label for="ed-ship-company">Société (optionnel)</label><input id="ed-ship-company" type="text" placeholder="Entreprise" /></div>
+                  <div class="co-field"><label for="ed-ship-phone">Téléphone</label><input id="ed-ship-phone" type="text" placeholder="06 12 34 56 78" /></div>
+                  <div class="co-field"><label for="ed-ship-address1">Adresse 1</label><input id="ed-ship-address1" type="text" placeholder="Rue, numéro" /></div>
+                  <div class="co-field"><label for="ed-ship-address2">Adresse 2</label><input id="ed-ship-address2" type="text" placeholder="Complément" /></div>
+                  <div class="co-field"><label for="ed-ship-city">Ville</label><input id="ed-ship-city" type="text" placeholder="Ville" /></div>
+                  <div class="co-field"><label for="ed-ship-postcode">Code postal</label><input id="ed-ship-postcode" type="text" placeholder="75000" /></div>
+                  <div class="co-field"><label for="ed-ship-country">Pays</label><input id="ed-ship-country" type="text" placeholder="France" /></div>
+                </div>
+                <div class="co-field">
+                  <label for="ed-estimated">Livraison estimée (optionnel)</label>
                   <input id="ed-estimated" type="date" />
-                  <div class="quick-date">
+                  <div class="co-quick-date">
                     <button type="button" class="qd" data-add="0">Aujourd’hui</button>
                     <button type="button" class="qd" data-add="1">+1 j</button>
                     <button type="button" class="qd" data-add="3">+3 j</button>
@@ -94,53 +234,36 @@
                     <button type="button" class="qd-clear">Effacer</button>
                   </div>
                 </div>
-              </div>
+              </section>
+              <section class="co-card">
+                <header class="co-card-header"><i class="fas fa-car"></i><span>Références techniques & véhicule</span></header>
+                <div class="co-grid">
+                  <div class="co-field"><label for="ed-vin">VIN / Plaque (optionnel)</label><input id="ed-vin" type="text" placeholder="VF3XXXXXXXXXXXXXX ou AB-123-CD" /></div>
+                  <div class="co-field"><label for="ed-engine">Cylindrée moteur</label><input id="ed-engine" type="text" placeholder="Ex: 1.4" /></div>
+                  <div class="co-field"><label for="ed-tcu">Référence TCU</label><input id="ed-tcu" type="text" placeholder="Ex: 0AM927769D" /></div>
+                </div>
+                <div class="co-checkbox">
+                  <input id="ed-tech-req" type="checkbox" />
+                  <label for="ed-tech-req">Référence technique obligatoire pour cette commande</label>
+                </div>
+              </section>
             </div>
-            <div class="co-section">
-              <div class="co-field" style="margin-top:6px;">
-                <label for="co-estimated">Livraison estimée (optionnel)</label>
-                <input id="co-estimated" type="date" />
-              </div>
-            </div>
-            <div class="co-section">
-              <h4>Référence technique</h4>
-              <div class="co-grid-2">
-                <div class="co-field"><label for="co-engine">Cylindrée moteur</label><input id="co-engine" type="text" placeholder="Ex: 1.4" /></div>
-                <div class="co-field"><label for="co-tcu">Référence TCU</label><input id="co-tcu" type="text" placeholder="Ex: 0AM927769D" /></div>
-              </div>
-              <div class="co-inline" style="margin-top:6px;">
-                <input id="co-tech-req" type="checkbox" />
-                <label for="co-tech-req">Référence requise</label>
-              </div>
-            </div>
-            <div class="co-section">
-              <h4>Véhicule</h4>
-              <div class="co-grid-2">
-                <div class="co-field"><label for="co-vin">VIN / Plaque (optionnel)</label><input id="co-vin" type="text" placeholder="Ex: VF3XXXXXXXXXXXXXX ou AB-123-CD" /></div>
-              </div>
-            </div>
-            <div class="co-section">
-              <h4>Référence technique</h4>
-              <div class="co-grid-2">
-                <div class="co-field"><label for="ed-engine">Cylindrée moteur</label><input id="ed-engine" type="text" placeholder="Ex: 1.4" /></div>
-                <div class="co-field"><label for="ed-tcu">Référence TCU</label><input id="ed-tcu" type="text" placeholder="Ex: 0AM927769D" /></div>
-              </div>
-              <div class="co-inline" style="margin-top:6px;">
-                <input id="ed-tech-req" type="checkbox" />
-                <label for="ed-tech-req">Référence requise</label>
-              </div>
-            </div>
-            <div id="ed-error" class="login-error" style="display:none;"></div>
           </div>
           <div class="cpf-modal-actions">
-            <button class="cpf-btn" data-action="cancel">Annuler</button>
-            <button class="cpf-btn cpf-btn-primary" data-action="confirm">Enregistrer</button>
+            <div id="ed-error" class="co-error" role="alert" aria-live="assertive"></div>
+            <div class="cpf-modal-actions__buttons">
+              <button class="cpf-btn cpf-btn-secondary" data-action="cancel">Annuler</button>
+              <button class="cpf-btn cpf-btn-primary" data-action="confirm">Enregistrer</button>
+            </div>
           </div>
         `;
         const onCleanup = () => { root.style.display = 'none'; root.innerHTML=''; root.removeEventListener('click', onOverlayClick); };
         const onOverlayClick = (e) => { if (e.target === root) onCleanup(); };
         root.addEventListener('click', onOverlayClick);
         root.appendChild(modal);
+        console.debug('[orders] openEditOrderModal: modal appended to root, visible=', root.style.display);
+        const closeBtn = modal.querySelector('[data-action="close"]');
+        if (closeBtn) closeBtn.addEventListener('click', onCleanup);
 
         const errEl = modal.querySelector('#ed-error');
         const vinEl = modal.querySelector('#ed-vin');
@@ -148,6 +271,11 @@
         const edEngineEl = modal.querySelector('#ed-engine');
         const edTcuEl = modal.querySelector('#ed-tcu');
         const edReqEl = modal.querySelector('#ed-tech-req');
+        const summaryNumberEl = modal.querySelector('#ed-summary-number');
+        const summaryStatusEl = modal.querySelector('#ed-summary-status');
+        const summaryProviderEl = modal.querySelector('#ed-summary-provider');
+        const summaryUpdatedEl = modal.querySelector('#ed-summary-updated');
+        const headerSubtitleEl = modal.querySelector('#ed-header-subtitle');
         // Boutons rapides (édition)
         try {
           const setByOffset = (input, days) => {
@@ -176,14 +304,56 @@
             address1: modal.querySelector('#ed-ship-address1'), address2: modal.querySelector('#ed-ship-address2'),
             city: modal.querySelector('#ed-ship-city'), postcode: modal.querySelector('#ed-ship-postcode'), country: modal.querySelector('#ed-ship-country')
         };
-        function copyBillToShipEd() { Object.keys(ship).forEach(k => { if (bill[k]) ship[k].value = bill[k].value || ''; }); }
-        function setShipDisabledEd(disabled) { Object.values(ship).forEach(el => { el.disabled = disabled; el.closest('.co-field').style.opacity = disabled ? 0.6 : 1; }); }
+        function copyBillToShipEd() {
+          Object.keys(ship).forEach(k => {
+            if (bill[k] && ship[k]) ship[k].value = bill[k].value || '';
+          });
+        }
+        function setShipDisabledEd(disabled) {
+          Object.values(ship).forEach(el => {
+            if (!el) return;
+            el.disabled = disabled;
+            const container = el.closest('.co-field');
+            if (container) container.style.opacity = disabled ? 0.55 : 1;
+          });
+        }
 
         // Pré-remplir depuis la commande
-        fetch(`/api/admin/orders/${encodeURIComponent(orderId)}`, { headers: { 'Authorization': `Basic ${authToken}` } })
+        fetch(`/api/admin/orders/${encodeURIComponent(orderId)}`, { headers: { 'Authorization': `Basic ${token}` } })
           .then(r => r.json()).then(d => {
             if (!d || !d.success || !d.order) return;
             const o = d.order;
+            try {
+              const statusLabels = {
+                pending: 'En attente',
+                processing: 'En cours',
+                completed: 'Terminée',
+                cancelled: 'Annulée',
+                refunded: 'Remboursée',
+                failed: 'Échec'
+              };
+              const prettyStatus = statusLabels[o.status] || (o.status ? o.status : 'Non défini');
+              if (summaryStatusEl) summaryStatusEl.textContent = `Statut : ${prettyStatus}`;
+              if (summaryNumberEl) summaryNumberEl.textContent = o.number ? `Commande ${o.number}` : `Commande ${String(o._id || '').slice(-6)}`;
+              if (summaryProviderEl) summaryProviderEl.textContent = `Source : ${o.provider || 'Interne'}`;
+              if (summaryUpdatedEl) {
+                let formatted = '';
+                try {
+                  const updatedAt = o.updatedAt || o.dateUpdated || o.createdAt;
+                  if (updatedAt) {
+                    const dt = new Date(updatedAt);
+                    if (!isNaN(dt.getTime())) {
+                      formatted = dt.toLocaleString('fr-FR', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+                    }
+                  }
+                } catch (_) {}
+                summaryUpdatedEl.textContent = formatted ? `Mis à jour le ${formatted}` : 'Mise à jour récente';
+              }
+              if (headerSubtitleEl) {
+                const customerName = (o.customer && o.customer.name) || (o.billing && o.billing.address && o.billing.address.name) || '';
+                headerSubtitleEl.textContent = customerName ? `Client : ${customerName}` : 'Mettez à jour les informations essentielles avant validation.';
+              }
+            } catch (_) {}
             // Billing/customer
             bill.name.value = (o.customer?.name || o.billing?.address?.name || '')
             bill.company.value = (o.billing?.address?.company || '')
@@ -278,7 +448,7 @@
             payload.meta.technicalRefRequired = reqVal;
             const r = await fetch(`/api/admin/orders/${encodeURIComponent(orderId)}`, {
               method: 'PUT',
-              headers: { 'Authorization': `Basic ${authToken}`, 'Content-Type': 'application/json' },
+              headers: { 'Authorization': `Basic ${token}`, 'Content-Type': 'application/json' },
               body: JSON.stringify(payload)
             });
             const d = await r.json().catch(() => ({}));
@@ -295,6 +465,109 @@
           }
         });
     }
+    
+    // Contexte courant de commande (utilisé par des boutons hors tableau)
+    function setCurrentOrderContext(id) {
+        try { window.__currentOrderId = id || ''; } catch(_) {}
+        try {
+            if (id) localStorage.setItem('lastOrderId', String(id));
+            else localStorage.removeItem('lastOrderId');
+        } catch(_) {}
+        try {
+            if (document && document.documentElement) {
+                if (id) document.documentElement.setAttribute('data-current-order-id', String(id));
+                else document.documentElement.removeAttribute('data-current-order-id');
+            }
+        } catch(_) {}
+        try {
+            let hidden = document.getElementById('current-order-id');
+            if (!hidden) {
+                hidden = document.createElement('input');
+                hidden.type = 'hidden';
+                hidden.id = 'current-order-id';
+                document.body.appendChild(hidden);
+            }
+            hidden.value = id || '';
+        } catch(_) {}
+        try {
+            const od = document.getElementById('od-edit');
+            if (od) {
+                if (id) od.dataset.id = id; else od.removeAttribute('data-id');
+            }
+        } catch(_) {}
+    }
+    
+    // Exposer la fonction pour debug (console) et intégrations externes
+    window.openEditOrderModal = openEditOrderModal;
+
+    // Résout l'ID de commande courant depuis différentes sources (portée globale)
+    function resolveCurrentOrderId(fromEl) {
+        let orderId = '';
+        try { orderId = (window.__currentOrderId || '').trim(); } catch(_) {}
+        if (!orderId) {
+            try {
+                const htmlId = document.documentElement && document.documentElement.getAttribute('data-current-order-id');
+                if (htmlId) orderId = htmlId;
+            } catch(_) {}
+        }
+        if (!orderId) {
+            try {
+                const hidden = document.getElementById('current-order-id');
+                if (hidden && hidden.value) orderId = hidden.value;
+            } catch(_) {}
+        }
+        if (!orderId) {
+            try {
+                const last = localStorage.getItem('lastOrderId');
+                if (last) orderId = last;
+            } catch(_) {}
+        }
+        if (!orderId && fromEl) {
+            const row = fromEl.closest && fromEl.closest('tr.order-row');
+            if (row && row.dataset && row.dataset.id) orderId = row.dataset.id;
+        }
+        if (!orderId) {
+            const checked = document.querySelector('input.order-select:checked');
+            if (checked && checked.getAttribute('data-id')) orderId = checked.getAttribute('data-id');
+        }
+        if (!orderId && fromEl) {
+            const ctx = fromEl.closest && fromEl.closest('[data-order-id]');
+            if (ctx && ctx.getAttribute('data-order-id')) orderId = ctx.getAttribute('data-order-id');
+        }
+        if (!orderId) {
+            const anyWrapper = document.querySelector('.order-status-wrapper[data-order-id]');
+            if (anyWrapper) orderId = anyWrapper.getAttribute('data-order-id');
+        }
+        if (!orderId) {
+            const firstRow = document.querySelector('#orders-list tr.order-row');
+            if (firstRow && firstRow.dataset && firstRow.dataset.id) orderId = firstRow.dataset.id;
+        }
+        return (orderId || '').trim();
+    }
+
+    // Accrocher openOrderDetails (si défini ailleurs) pour toujours mémoriser l'orderId courant
+    (function hookOpenOrderDetails() {
+        if (window.__hookedOpenOrderDetails) return;
+        function attach(fn) {
+            if (typeof fn !== 'function') return false;
+            const orig = fn;
+            const wrapped = function(id) {
+                try { setCurrentOrderContext(id); } catch(_) {}
+                return orig.apply(this, arguments);
+            };
+            wrapped.__wrapped__ = true;
+            window.openOrderDetails = wrapped;
+            window.__hookedOpenOrderDetails = true;
+            return true;
+        }
+        if (!attach(window.openOrderDetails)) {
+            let tries = 0;
+            const iv = setInterval(() => {
+                tries++;
+                if (attach(window.openOrderDetails) || tries > 20) clearInterval(iv);
+            }, 500);
+        }
+    })();
 
     // ================= Notifications (In‑app) =================
     let notifPollIntervalId = null;
@@ -327,7 +600,9 @@
         const url = `/api/admin/notifications?limit=${encodeURIComponent(limit)}`;
         const res = await fetch(url, { headers: { 'Authorization': `Basic ${authToken}` } });
         if (!res.ok) {
-            if (res.status === 401) logout();
+            if (res.status === 401) {
+                console.warn('[notifications] 401 – accès refusé, aucune déconnexion déclenchée');
+            }
             return { notifications: [], unreadCount: 0 };
         }
         const data = await res.json().catch(() => ({}));
@@ -460,6 +735,27 @@
             notifPollIntervalId = null;
         }
     };
+
+    function hideAllAdminSections() {
+        ['admin-dashboard', 'admin-orders', 'admin-tasks', 'admin-settings', 'admin-docs', 'ticket-details'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.style.display = 'none';
+        });
+        const docsAdmin = document.getElementById('docs-admin-section');
+        if (docsAdmin) docsAdmin.style.display = 'none';
+    }
+
+    function showAdminSection(id) {
+        hideAllAdminSections();
+        const target = document.getElementById(id);
+        if (target) target.style.display = 'block';
+    }
+
+    window.hideAllAdminSections = hideAllAdminSections;
+    window.showAdminSection = showAdminSection;
+    // Variables globales d'UI (visibles partout)
+    window.lastListScrollY = window.lastListScrollY || 0;
+    window.detailsKeydownHandler = window.detailsKeydownHandler || null;
 // Rendre certaines variables et fonctions accessibles globalement pour kanban.js
 window.authToken = localStorage.getItem('authToken');
 
@@ -786,10 +1082,10 @@ window.viewTicket = async function(ticketId) {
         const ticket = (data && typeof data === 'object' && 'ticket' in data) ? data.ticket : data;
         const statusHistory = (data && typeof data === 'object' && Array.isArray(data.statusHistory)) ? data.statusHistory : undefined;
         
-        // Masquer la liste des tickets et afficher les détails
-        document.getElementById('admin-dashboard').style.display = 'none';
-        document.getElementById('ticket-details').style.display = 'block';
-        
+        // Masquer les autres sections et afficher la fiche ticket
+        showAdminSection('ticket-details');
+        try { setActiveNav('tickets'); } catch (_) {}
+
         // Remplir les détails du ticket (et l'historique si présent)
         window.displayTicketDetails(ticket, statusHistory);
         
@@ -1336,57 +1632,143 @@ window.showNotification = function(message, type = 'info') {
 function initFiltersSidebar() {
     const toggleBtn = document.getElementById('toggle-filters-sidebar');
     const filtersSidebar = document.getElementById('filters-sidebar');
-    const mainContent = document.querySelector('.dashboard-main-content');
-    
-    // Vérifier si les éléments existent
-    if (toggleBtn && filtersSidebar) {
-        // Gérer le clic sur le bouton de bascule
-        toggleBtn.addEventListener('click', function() {
-            // Basculer la classe 'collapsed' sur la sidebar
-            filtersSidebar.classList.toggle('collapsed');
-            
-            // Modifier l'icône du bouton
-            const icon = toggleBtn.querySelector('i');
-            if (icon) {
-                if (filtersSidebar.classList.contains('collapsed')) {
-                    icon.className = 'fas fa-chevron-right';
-                    console.log('Volet fermé, icône changée en chevron-right');
-                } else {
-                    icon.className = 'fas fa-chevron-left';
-                    console.log('Volet ouvert, icône changée en chevron-left');
-                }
-            }
-            
-            // Ajuster le padding du contenu principal si nécessaire
-            if (mainContent) {
-                mainContent.style.transition = 'padding-left 0.3s ease';
-            }
-            
-            // Débug
-            console.log('Toggle sidebar - État collapsed:', filtersSidebar.classList.contains('collapsed'));
-        });
-        
-        // Ajouter un bouton mobile pour les écrans plus petits
-        if (window.innerWidth <= 992) {
-            const mobileToggle = document.createElement('button');
-            mobileToggle.className = 'filters-sidebar-toggle-mobile';
-            mobileToggle.innerHTML = '<i class="fas fa-filter"></i>';
-            document.body.appendChild(mobileToggle);
-            
-            mobileToggle.addEventListener('click', function() {
-                filtersSidebar.classList.toggle('active');
-            });
-        }
+    const overlay = document.getElementById('filters-sidebar-overlay');
+    const MEDIA_MOBILE = window.matchMedia('(max-width: 992px)');
+    const body = document.body;
+    let mobileToggleButton = null;
+
+    if (!toggleBtn || !filtersSidebar) {
+        return;
     }
-    
-    // Fermer la sidebar en cliquant en dehors (pour les appareils mobiles)
-    document.addEventListener('click', function(e) {
-        if (window.innerWidth <= 992 && filtersSidebar && filtersSidebar.classList.contains('active')) {
-            if (!filtersSidebar.contains(e.target) && e.target.id !== 'toggle-filters-sidebar' && !e.target.closest('.filters-sidebar-toggle-mobile')) {
-                filtersSidebar.classList.remove('active');
+
+    const icon = toggleBtn.querySelector('i');
+
+    const savedCollapsed = localStorage.getItem('filtersSidebarCollapsed') === '1';
+
+    function isMobile() {
+        return MEDIA_MOBILE.matches;
+    }
+
+    function setCollapsed(collapsed) {
+        filtersSidebar.classList.toggle('collapsed', collapsed);
+        toggleBtn.setAttribute('aria-expanded', String(!collapsed));
+        if (icon) {
+            icon.className = collapsed ? 'fas fa-chevron-right' : 'fas fa-chevron-left';
+        }
+        localStorage.setItem('filtersSidebarCollapsed', collapsed ? '1' : '0');
+    }
+
+    function showOverlay() {
+        if (!overlay) return;
+        overlay.hidden = false;
+        requestAnimationFrame(() => overlay.classList.add('is-visible'));
+        body.classList.add('no-scroll');
+    }
+
+    function hideOverlay() {
+        if (!overlay) return;
+        overlay.classList.remove('is-visible');
+        const onTransitionEnd = () => {
+            overlay.hidden = true;
+            overlay.removeEventListener('transitionend', onTransitionEnd);
+        };
+        overlay.addEventListener('transitionend', onTransitionEnd);
+        body.classList.remove('no-scroll');
+    }
+
+    function openMobilePanel() {
+        filtersSidebar.classList.add('active');
+        toggleBtn.setAttribute('aria-expanded', 'true');
+        showOverlay();
+    }
+
+    function closeMobilePanel() {
+        if (!filtersSidebar.classList.contains('active')) return;
+        filtersSidebar.classList.remove('active');
+        toggleBtn.setAttribute('aria-expanded', 'false');
+        hideOverlay();
+    }
+
+    function ensureMobileToggle() {
+        if (mobileToggleButton || !isMobile()) return;
+        mobileToggleButton = document.createElement('button');
+        mobileToggleButton.className = 'filters-sidebar-toggle-mobile';
+        mobileToggleButton.innerHTML = '<i class="fas fa-filter"></i>';
+        mobileToggleButton.type = 'button';
+        mobileToggleButton.setAttribute('aria-label', 'Ouvrir les filtres');
+        mobileToggleButton.addEventListener('click', openMobilePanel);
+        document.body.appendChild(mobileToggleButton);
+    }
+
+    function destroyMobileToggle() {
+        if (!mobileToggleButton) return;
+        mobileToggleButton.removeEventListener('click', openMobilePanel);
+        mobileToggleButton.remove();
+        mobileToggleButton = null;
+    }
+
+    function handleToggleClick() {
+        if (isMobile()) {
+            if (filtersSidebar.classList.contains('active')) {
+                closeMobilePanel();
+            } else {
+                openMobilePanel();
             }
+            return;
+        }
+        const shouldCollapse = !filtersSidebar.classList.contains('collapsed');
+        setCollapsed(shouldCollapse);
+    }
+
+    toggleBtn.addEventListener('click', handleToggleClick);
+
+    if (overlay) {
+        overlay.addEventListener('click', closeMobilePanel);
+    }
+
+    document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') {
+            closeMobilePanel();
         }
     });
+
+    document.addEventListener('click', (event) => {
+        if (!isMobile()) return;
+        if (!filtersSidebar.classList.contains('active')) return;
+        if (filtersSidebar.contains(event.target) || event.target === toggleBtn || event.target.closest('.filters-sidebar-toggle-mobile')) {
+            return;
+        }
+        closeMobilePanel();
+    });
+
+    MEDIA_MOBILE.addEventListener('change', (event) => {
+        if (event.matches) {
+            setCollapsed(false);
+            ensureMobileToggle();
+        } else {
+            closeMobilePanel();
+            destroyMobileToggle();
+            setCollapsed(savedCollapsed);
+            if (overlay) {
+                overlay.classList.remove('is-visible');
+                overlay.hidden = true;
+            }
+            body.classList.remove('no-scroll');
+        }
+    });
+
+    if (isMobile()) {
+        setCollapsed(false);
+        ensureMobileToggle();
+    } else {
+        setCollapsed(savedCollapsed);
+        destroyMobileToggle();
+        if (overlay) {
+            overlay.hidden = true;
+            overlay.classList.remove('is-visible');
+        }
+        body.classList.remove('no-scroll');
+    }
 }
 
 function initCollapsibleFilters() {
@@ -1472,19 +1854,16 @@ function initFilterTabs() {
 // Revenir à la liste avec restauration du scroll et nettoyage des handlers
 function goBackToList() {
     try {
-        // Cibler explicitement les éléments pour éviter les problèmes de portée
-        const detailsEl = document.getElementById('ticket-details');
-        if (detailsEl) detailsEl.style.display = 'none';
-        const dashboard = document.getElementById('admin-dashboard');
-        if (dashboard) dashboard.style.display = 'block';
-        const settings = document.getElementById('admin-settings');
-        if (settings) settings.style.display = 'none';
-        if (detailsKeydownHandler) {
-            document.removeEventListener('keydown', detailsKeydownHandler);
-            detailsKeydownHandler = null;
+        // Masquer toutes les sections et afficher le dashboard (Tickets)
+        if (typeof window.showAdminSection === 'function') window.showAdminSection('admin-dashboard');
+        // Nettoyer l'écouteur clavier si présent
+        if (window.detailsKeydownHandler) {
+            document.removeEventListener('keydown', window.detailsKeydownHandler);
+            window.detailsKeydownHandler = null;
         }
-        if (typeof lastListScrollY === 'number') {
-            try { window.scrollTo({ top: lastListScrollY, left: 0, behavior: 'auto' }); } catch(_) { window.scrollTo(0, lastListScrollY || 0); }
+        // Restaurer le scroll de la liste si connu
+        if (typeof window.lastListScrollY === 'number') {
+            try { window.scrollTo({ top: window.lastListScrollY, left: 0, behavior: 'auto' }); } catch(_) { window.scrollTo(0, window.lastListScrollY || 0); }
         }
         // Synchroniser l'état de navigation (hash) pour éviter les incohérences de route
         try {
@@ -1576,6 +1955,7 @@ function initAdminApp() {
     // Paramètres / Gestion utilisateurs
     const adminDashboard = document.getElementById('admin-dashboard');
     const adminSettings = document.getElementById('admin-settings');
+    const adminOrders = document.getElementById('admin-orders');
     const userManagementSection = document.getElementById('user-management-section');
     const usersListEl = document.getElementById('users-list');
     const userFormCard = document.getElementById('user-form-card');
@@ -1643,9 +2023,9 @@ function initAdminApp() {
     let additionalInfoGroup = null;
     let saveNotesBtn = null;
     let cachedUsers = [];
-    // Améliorations UX: mémoriser le scroll de la liste et le key handler des détails
-    let lastListScrollY = 0;
-    let detailsKeydownHandler = null;
+    // Améliorations UX: mémoriser le scroll de la liste et le key handler des détails (globaux)
+    window.lastListScrollY = window.lastListScrollY || 0;
+    window.detailsKeydownHandler = window.detailsKeydownHandler || null;
     // Titres/aria des boutons globaux si présents
     if (backToListBtn) {
         backToListBtn.title = 'Retour à la liste (Échap)';
@@ -2150,6 +2530,7 @@ async function checkAuth() {
                 if (adminDashboard) adminDashboard.style.display = 'none';
                 if (adminSettings) adminSettings.style.display = 'none';
                 if (ticketDetails) ticketDetails.style.display = 'none';
+                if (adminOrders) adminOrders.style.display = 'none';
             }
         }
     }
@@ -2197,6 +2578,8 @@ async function checkAuth() {
         try { if (typeof window.stopNotificationsPolling === 'function') window.stopNotificationsPolling(); } catch (_) {}
         checkAuth();
     }
+    // Rendre accessible globalement pour les modules/fonctions hors portée init
+    try { window.logout = logout; } catch (_) {}
     
     // Charger le tableau de bord
     // Fonction simplifiée pour charger uniquement les tickets et statistiques de base
@@ -2440,29 +2823,22 @@ async function checkAuth() {
     }
     
     function showDashboard() {
-        if (adminDashboard) adminDashboard.style.display = 'block';
-        if (adminSettings) adminSettings.style.display = 'none';
-        if (ticketDetails) ticketDetails.style.display = 'none';
+        showAdminSection('admin-dashboard');
         setActiveNav('tickets');
     }
     
     function showSettings() {
-        if (adminDashboard) adminDashboard.style.display = 'none';
-        if (ticketDetails) ticketDetails.style.display = 'none';
-        if (adminSettings) adminSettings.style.display = 'block';
+        showAdminSection('admin-settings');
         setActiveNav('settings');
+        try { initTaskTemplatesSettingsUIOnce(); } catch(_) {}
+        try { loadAndRenderTaskTemplatesSettings(); } catch(_) {}
     }
     
     // Afficher la Documentation
     function showDocs() {
-        const dashboard = document.getElementById('admin-dashboard');
-        const settings = document.getElementById('admin-settings');
-        const details = document.getElementById('ticket-details');
-        const docs = document.getElementById('admin-docs');
-        if (dashboard) dashboard.style.display = 'none';
-        if (settings) settings.style.display = 'none';
-        if (details) details.style.display = 'none';
-        if (docs) docs.style.display = 'block';
+        const docsAdmin = document.getElementById('docs-admin-section');
+        if (docsAdmin) docsAdmin.style.display = 'none';
+        showAdminSection('admin-docs');
         // Masquer l'écran de connexion si présent afin d'afficher la documentation sans gêne
         try { if (typeof adminLogin !== 'undefined' && adminLogin) adminLogin.style.display = 'none'; } catch(_) {}
         setActiveNav('docs');
@@ -2482,20 +2858,1173 @@ async function checkAuth() {
     
     // Afficher la section Commandes
     function showOrders() {
-        const dashboard = document.getElementById('admin-dashboard');
-        const settings = document.getElementById('admin-settings');
-        const details = document.getElementById('ticket-details');
-        const docs = document.getElementById('admin-docs');
-        const orders = document.getElementById('admin-orders');
-        if (dashboard) dashboard.style.display = 'none';
-        if (settings) settings.style.display = 'none';
-        if (details) details.style.display = 'none';
-        if (docs) docs.style.display = 'none';
-        if (orders) orders.style.display = 'block';
+        const docsAdmin = document.getElementById('docs-admin-section');
+        if (docsAdmin) docsAdmin.style.display = 'none';
+        showAdminSection('admin-orders');
         setActiveNav('orders');
         try { initOrdersUIOnce(); } catch(_) {}
         try { loadOrdersList(1); } catch(_) {}
     }
+
+    // --- Section Tâches ---
+    const tasksTableBody = document.getElementById('tasks-list');
+    const tasksPagination = document.getElementById('tasks-pagination');
+    const tasksSearchInput = document.getElementById('tasks-search-input');
+    const tasksStatusFilter = document.getElementById('tasks-status-filter');
+    const tasksPriorityFilter = document.getElementById('tasks-priority-filter');
+    const tasksAssignedFilter = document.getElementById('tasks-assigned-filter');
+    const tasksClearFiltersBtn = document.getElementById('tasks-clear-filters');
+    const tasksOpenCount = document.getElementById('tasks-open-count');
+    const tasksProgressCount = document.getElementById('tasks-progress-count');
+    const tasksUrgentCount = document.getElementById('tasks-urgent-count');
+    const tasksDoneCount = document.getElementById('tasks-done-count');
+    const tasksSidepanel = document.getElementById('tasks-sidepanel');
+    const tasksSidepanelEmpty = document.getElementById('tasks-sidepanel-empty');
+    const tasksSidepanelContent = document.getElementById('tasks-sidepanel-content');
+    const tasksSidepanelStatus = document.getElementById('tasks-sidepanel-status');
+    const tasksSidepanelTitle = document.getElementById('tasks-sidepanel-title');
+    const tasksSidepanelMeta = document.getElementById('tasks-sidepanel-meta');
+    const tasksSidepanelDescription = document.getElementById('tasks-sidepanel-description');
+    const tasksSidepanelPriority = document.getElementById('tasks-sidepanel-priority');
+    const tasksSidepanelAssigned = document.getElementById('tasks-sidepanel-assigned');
+    const tasksSidepanelCreatedBy = document.getElementById('tasks-sidepanel-created-by');
+    const tasksSidepanelCreatedAt = document.getElementById('tasks-sidepanel-created-at');
+    const tasksSidepanelDue = document.getElementById('tasks-sidepanel-due');
+    const tasksSidepanelTimeline = document.getElementById('tasks-sidepanel-timeline');
+    const tasksSidepanelCreateBtn = document.getElementById('tasks-sidepanel-create');
+    const tasksSidepanelEditBtn = document.getElementById('tasks-sidepanel-edit');
+    const tasksRefreshBtn = document.getElementById('tasks-refresh-btn');
+    const tasksCreateBtn = document.getElementById('tasks-create-btn');
+    const tasksTabBtnTasks = document.getElementById('tasks-tab-btn-tasks');
+    const tasksTabBtnShipments = document.getElementById('tasks-tab-btn-shipments');
+    const tasksTabPanelTasks = document.getElementById('tasks-tab-panel-tasks');
+    const tasksTabPanelShipments = document.getElementById('tasks-tab-panel-shipments');
+    const shipmentsSummaryTotal = document.getElementById('shipments-total-count');
+    const shipmentsSummaryDueToday = document.getElementById('shipments-due-today');
+    const shipmentsSummaryOverdue = document.getElementById('shipments-overdue');
+    const shipmentsSummaryNoDate = document.getElementById('shipments-no-date');
+    const shipmentsTableBody = document.getElementById('shipments-list');
+    const shipmentsRefreshBtn = document.getElementById('shipments-refresh-btn');
+    const shipmentsFilterLabel = document.getElementById('shipments-filter-label');
+    const shipmentsLastRefreshLabel = document.getElementById('shipments-last-refresh');
+    const shipmentsQuickFilters = document.getElementById('shipments-quick-filters');
+
+    let tasksInitialized = false;
+    let currentTasksPage = 1;
+    let tasksTeam = [];
+    let tasksTeamMap = new Map();
+    let tasksTeamPromise = null;
+    let cachedTasksMap = new Map();
+    let tasksSelectedId = null;
+    let currentTasksTab = 'tasks';
+    let shipmentsInitialized = false;
+    let shipmentsLoading = false;
+    let shipmentsData = [];
+    let currentShipmentsFilter = 'all';
+
+    function showTasks() {
+        const docsAdmin = document.getElementById('docs-admin-section');
+        if (docsAdmin) docsAdmin.style.display = 'none';
+        showAdminSection('admin-tasks');
+        setActiveNav('tasks');
+        if (!tasksInitialized) {
+            initTasksUI();
+            tasksInitialized = true;
+        }
+        loadTasksList(1);
+    }
+
+    function initTasksUI() {
+        if (tasksCreateBtn) tasksCreateBtn.addEventListener('click', () => openTaskModal());
+        if (tasksRefreshBtn) tasksRefreshBtn.addEventListener('click', () => loadTasksList(currentTasksPage));
+        if (tasksSearchInput) tasksSearchInput.addEventListener('input', debounce(() => loadTasksList(1), 300));
+        if (tasksStatusFilter) tasksStatusFilter.addEventListener('change', () => loadTasksList(1));
+        if (tasksPriorityFilter) tasksPriorityFilter.addEventListener('change', () => loadTasksList(1));
+        if (tasksAssignedFilter) tasksAssignedFilter.addEventListener('change', () => loadTasksList(1));
+        if (tasksClearFiltersBtn) tasksClearFiltersBtn.addEventListener('click', handleTasksClearFilters);
+        if (tasksSidepanelCreateBtn) tasksSidepanelCreateBtn.addEventListener('click', () => openTaskModal());
+        if (tasksSidepanelEditBtn) tasksSidepanelEditBtn.addEventListener('click', () => { if (tasksSelectedId) openTaskModal(tasksSelectedId); });
+        if (tasksTableBody) tasksTableBody.addEventListener('click', handleTasksTableClick, { passive: true });
+        if (tasksTabBtnTasks) tasksTabBtnTasks.addEventListener('click', () => switchTasksTab('tasks'));
+        if (tasksTabBtnShipments) tasksTabBtnShipments.addEventListener('click', () => switchTasksTab('shipments'));
+        if (shipmentsRefreshBtn) shipmentsRefreshBtn.addEventListener('click', () => loadShipmentsData(true));
+        if (shipmentsTableBody) shipmentsTableBody.addEventListener('click', handleShipmentsTableClick);
+        if (shipmentsQuickFilters) shipmentsQuickFilters.addEventListener('click', onShipmentsFilterClick);
+
+        document.querySelectorAll('.tasks-chip').forEach(chip => {
+            chip.addEventListener('click', () => {
+                document.querySelectorAll('.tasks-chip').forEach(c => c.classList.remove('active'));
+                chip.classList.add('active');
+                if (tasksStatusFilter) tasksStatusFilter.value = chip.dataset.status || '';
+                loadTasksList(1);
+            });
+        });
+
+        tasksTeamPromise = ensureTasksTeamLoaded();
+        resetTasksSidepanel();
+
+        // Filtres rapides (Mes urgences, Aujourd’hui, En retard, Non assignées)
+        const qfMyUrgent = document.getElementById('qf-my-urgent');
+        const qfToday = document.getElementById('qf-today');
+        const qfOverdue = document.getElementById('qf-overdue');
+        const qfUnassigned = document.getElementById('qf-unassigned');
+
+        function setQuickFilter(key) {
+            // Réinitialiser l'état
+            [qfMyUrgent, qfToday, qfOverdue, qfUnassigned].forEach(btn => { if (btn) btn.setAttribute('aria-pressed', 'false'); });
+            if (key === 'myUrgent' && qfMyUrgent) qfMyUrgent.setAttribute('aria-pressed', 'true');
+            if (key === 'today' && qfToday) qfToday.setAttribute('aria-pressed', 'true');
+            if (key === 'overdue' && qfOverdue) qfOverdue.setAttribute('aria-pressed', 'true');
+            if (key === 'unassigned' && qfUnassigned) qfUnassigned.setAttribute('aria-pressed', 'true');
+
+            // Ajuster les sélecteurs visibles pour cohérence
+            if (tasksStatusFilter) tasksStatusFilter.value = '';
+            if (tasksPriorityFilter) tasksPriorityFilter.value = '';
+            if (tasksAssignedFilter) {
+                if (key === 'myUrgent') tasksAssignedFilter.value = 'me';
+                else if (key === 'unassigned') tasksAssignedFilter.value = 'unassigned';
+                else tasksAssignedFilter.value = '';
+            }
+            loadTasksList(1);
+        }
+
+        if (qfMyUrgent) qfMyUrgent.addEventListener('click', () => setQuickFilter('myUrgent'));
+        if (qfToday) qfToday.addEventListener('click', () => setQuickFilter('today'));
+        if (qfOverdue) qfOverdue.addEventListener('click', () => setQuickFilter('overdue'));
+        if (qfUnassigned) qfUnassigned.addEventListener('click', () => setQuickFilter('unassigned'));
+    }
+
+    function switchTasksTab(tab) {
+        if (tab === currentTasksTab) return;
+        currentTasksTab = tab;
+        const mapping = [
+            { btn: tasksTabBtnTasks, panel: tasksTabPanelTasks, key: 'tasks' },
+            { btn: tasksTabBtnShipments, panel: tasksTabPanelShipments, key: 'shipments' }
+        ];
+        mapping.forEach(({ btn, panel, key }) => {
+            const isActive = key === tab;
+            if (btn) {
+                btn.classList.toggle('is-active', isActive);
+                btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
+                btn.setAttribute('tabindex', isActive ? '0' : '-1');
+            }
+            if (panel) {
+                panel.classList.toggle('is-active', isActive);
+                if (isActive) panel.removeAttribute('hidden');
+                else panel.setAttribute('hidden', '');
+            }
+        });
+        if (tab === 'shipments') loadShipmentsData();
+    }
+
+    async function loadShipmentsData(force = false) {
+        if (!authToken) return logout();
+        if (shipmentsLoading) return;
+        if (!force && shipmentsInitialized) return;
+        shipmentsLoading = true;
+        if (shipmentsTableBody) shipmentsTableBody.innerHTML = `<tr><td colspan="7" class="shipments-empty-state"><i class="fas fa-spinner fa-spin"></i> Chargement…</td></tr>`;
+        if (shipmentsFilterLabel) shipmentsFilterLabel.textContent = 'Chargement des expéditions…';
+        try {
+            const res = await fetch('/api/admin/orders/shipments', { headers: { 'Authorization': `Basic ${authToken}` } });
+            let data = {};
+            try { data = await res.json(); } catch (_) { data = {}; }
+
+            if (res.status === 401 || res.status === 403) {
+                if (shipmentsTableBody) shipmentsTableBody.innerHTML = `<tr><td colspan="7" class="shipments-empty-state error"><i class="fas fa-lock"></i> Session expirée. Merci de vous reconnecter.</td></tr>`;
+                if (shipmentsFilterLabel) shipmentsFilterLabel.textContent = 'Session expirée';
+                try { showToast('Votre session a expiré, veuillez vous reconnecter.', 'warning'); } catch (_) {}
+                shipmentsLoading = false;
+                logout();
+                return;
+            }
+
+            if (!res.ok || !data.success) {
+                const status = res.status;
+                const statusText = res.statusText || '';
+                const serverMsg = (data && data.message) ? data.message : '';
+                const composed = `${status} ${statusText}`.trim() + (serverMsg ? ` · ${serverMsg}` : '');
+                console.warn('[shipments] réponse non OK', { url: '/api/admin/orders/shipments', status, statusText, serverMsg });
+                throw new Error(composed || 'Erreur de chargement des expéditions');
+            }
+            shipmentsInitialized = true;
+            shipmentsData = Array.isArray(data.shipments) ? data.shipments : [];
+            updateShipmentsSummary(data);
+            updateShipmentsLastRefresh();
+            applyShipmentsFilter(currentShipmentsFilter, false);
+        } catch (e) {
+            const emsg = (e && (e.message || e.stack)) ? (e.stack || e.message) : JSON.stringify(e || {});
+            console.error('shipments load error ->', emsg);
+            if (shipmentsTableBody) shipmentsTableBody.innerHTML = `<tr><td colspan="7" class="shipments-empty-state error"><i class="fas fa-triangle-exclamation"></i> ${esc(e.message || 'Erreur de chargement')}</td></tr>`;
+            if (shipmentsFilterLabel) shipmentsFilterLabel.textContent = 'Impossible de charger les expéditions';
+            try { showToast(e.message || 'Erreur expéditions', 'error'); } catch(_) {}
+        } finally {
+            shipmentsLoading = false;
+        }
+    }
+
+    function updateShipmentsSummary(data) {
+        const stats = data?.stats || {};
+        if (shipmentsSummaryTotal) shipmentsSummaryTotal.textContent = Number(data?.total || data?.count || 0);
+        if (shipmentsSummaryDueToday) shipmentsSummaryDueToday.textContent = Number(stats?.dueToday || 0);
+        if (shipmentsSummaryOverdue) shipmentsSummaryOverdue.textContent = Number(stats?.overdue || 0);
+        if (shipmentsSummaryNoDate) shipmentsSummaryNoDate.textContent = Number(stats?.withoutEstimatedDate || 0);
+    }
+
+    function updateShipmentsLastRefresh() {
+        try {
+            if (!shipmentsLastRefreshLabel) return;
+            const now = new Date();
+            shipmentsLastRefreshLabel.textContent = `Dernière mise à jour : ${formatDateTime(now)}`;
+        } catch(_) {}
+    }
+
+    function onShipmentsFilterClick(ev) {
+        const btn = ev.target.closest('button[data-filter]');
+        if (!btn) return;
+        ev.preventDefault();
+        applyShipmentsFilter(btn.dataset.filter || 'all', true);
+    }
+
+    function applyShipmentsFilter(filterKey = 'all', updateUI = true) {
+        currentShipmentsFilter = filterKey;
+        if (shipmentsQuickFilters && updateUI) {
+            shipmentsQuickFilters.querySelectorAll('.shipments-chip').forEach(btn => {
+                btn.classList.toggle('is-active', btn.dataset.filter === filterKey);
+            });
+        }
+        if (shipmentsFilterLabel) {
+            const labels = {
+                all: 'Toutes les commandes à expédier',
+                today: 'Livraisons prévues aujourd’hui',
+                overdue: 'Commandes en retard',
+                noTracking: 'Commandes sans numéro de suivi',
+                noDate: 'Commandes sans date estimée'
+            };
+            shipmentsFilterLabel.textContent = labels[filterKey] || labels.all;
+        }
+        renderShipmentsTable(filterShipmentsList(shipmentsData, filterKey));
+    }
+
+    function filterShipmentsList(source, filterKey) {
+        if (!Array.isArray(source) || !source.length) return [];
+        const now = new Date();
+        const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        const startOfTomorrow = new Date(startOfToday);
+        startOfTomorrow.setDate(startOfTomorrow.getDate() + 1);
+        switch (filterKey) {
+            case 'today':
+                return source.filter(order => {
+                    const estimated = order.estimatedDeliveryAt ? new Date(order.estimatedDeliveryAt) : null;
+                    return estimated && estimated >= startOfToday && estimated < startOfTomorrow;
+                });
+            case 'overdue':
+                return source.filter(order => {
+                    const estimated = order.estimatedDeliveryAt ? new Date(order.estimatedDeliveryAt) : null;
+                    return estimated && estimated < startOfToday;
+                });
+            case 'noTracking':
+                return source.filter(order => !(order.tracking && order.tracking.hasTracking));
+            case 'noDate':
+                return source.filter(order => !order.estimatedDeliveryAt);
+            default:
+                return source.slice();
+        }
+    }
+
+    function renderShipmentsTable(shipments) {
+        if (!shipmentsTableBody) return;
+        if (!Array.isArray(shipments) || shipments.length === 0) {
+            shipmentsTableBody.innerHTML = '<tr><td colspan="7" class="shipments-empty-state"><i class="fas fa-box-open"></i> Aucune commande à expédier pour le moment.</td></tr>';
+            return;
+        }
+        const now = new Date();
+        const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        const startOfTomorrow = new Date(startOfToday);
+        startOfTomorrow.setDate(startOfTomorrow.getDate() + 1);
+        const statusLabels = {
+            pending_payment: 'En attente paiement',
+            awaiting_transfer: 'Virement en attente',
+            paid: 'Payée',
+            processing: 'Préparation',
+            partially_fulfilled: 'Partielle',
+            awaiting_shipment: 'Attente expédition'
+        };
+        const providerLabels = {
+            woocommerce: 'WooCommerce',
+            mollie: 'Mollie',
+            bank_transfer: 'Virement',
+            manual: 'Manuelle'
+        };
+        shipmentsTableBody.innerHTML = shipments.map(order => {
+            const id = String(order.id || '');
+            const number = order.number ? `Commande ${esc(order.number)}` : `Commande ${esc(id.slice(-6) || '')}`;
+            const providerLabel = providerLabels[order.provider] || 'Interne';
+            const statusLabel = statusLabels[order.status] || order.status || '—';
+            const customerName = order.customer?.name || 'Client inconnu';
+            const customerEmail = order.customer?.email || '';
+            const customerPhone = order.customer?.phone || '';
+            const estimatedDate = order.estimatedDeliveryAt ? new Date(order.estimatedDeliveryAt) : null;
+            let estimatedLabel = 'À planifier';
+            let estimatedBadge = 'planning';
+            if (estimatedDate && !isNaN(estimatedDate.getTime())) {
+                estimatedLabel = formatDate(estimatedDate.toISOString());
+                if (estimatedDate < startOfToday) estimatedBadge = 'overdue';
+                else if (estimatedDate >= startOfToday && estimatedDate < startOfTomorrow) estimatedBadge = 'today';
+                else estimatedBadge = 'scheduled';
+            }
+            const trackingNumber = order.tracking?.number || '';
+            const trackingCarrier = order.tracking?.carrier || '';
+            const hasTracking = !!order.tracking?.hasTracking;
+            const amountLabel = formatMoney(order.totals?.amount ?? 0, order.totals?.currency || 'EUR');
+            const vinOrPlate = order.meta?.vinOrPlate ? esc(order.meta.vinOrPlate) : '';
+            const rowClasses = ['shipment-row'];
+            if (!estimatedDate) rowClasses.push('is-planning');
+            else if (estimatedDate < startOfToday) rowClasses.push('is-overdue');
+            else if (estimatedDate >= startOfToday && estimatedDate < startOfTomorrow) rowClasses.push('is-today');
+            const trackingHtml = hasTracking
+                ? `<div class="shipments-tracking has-tracking">
+                        <span><i class="fas fa-barcode"></i> ${esc(trackingNumber)}</span>
+                        ${trackingCarrier ? `<small>${esc(trackingCarrier)}</small>` : ''}
+                   </div>`
+                : '<div class="shipments-tracking missing"><i class="fas fa-triangle-exclamation"></i> À renseigner</div>';
+            const vinHtml = vinOrPlate ? `<small class="shipments-order__vin"><i class="fas fa-id-card"></i> ${vinOrPlate}</small>` : '';
+            const statusBadgeClass = hasTracking ? 'shipments-status--normal' : 'shipments-status--alert';
+            return `
+                <tr class="${rowClasses.join(' ')}" data-id="${escAttr(id)}">
+                    <td>
+                        <div class="shipments-order">
+                            <strong>${number}</strong>
+                            <small>${esc(statusLabel)} · ${esc(providerLabel)}</small>
+                            ${vinHtml}
+                        </div>
+                    </td>
+                    <td>
+                        <div class="shipments-customer">
+                            <strong>${esc(customerName)}</strong>
+                            ${customerEmail ? `<small>${esc(customerEmail)}</small>` : ''}
+                            ${customerPhone ? `<small>${esc(customerPhone)}</small>` : ''}
+                        </div>
+                    </td>
+                    <td>
+                        <span class="shipments-status ${statusBadgeClass}"><i class="fas fa-circle"></i> ${esc(statusLabel)}</span>
+                    </td>
+                    <td>
+                        <span class="shipments-badge shipments-badge--${estimatedBadge}">${esc(estimatedLabel)}</span>
+                    </td>
+                    <td>
+                        ${trackingHtml}
+                    </td>
+                    <td>
+                        <div class="shipments-amount">
+                            <strong>${esc(amountLabel)}</strong>
+                            ${order.createdAt ? `<small>Créée le ${esc(formatDate(order.createdAt))}</small>` : ''}
+                        </div>
+                    </td>
+                    <td class="shipments-actions">
+                        <button class="btn-tertiary shipments-action" data-action="details" data-id="${escAttr(id)}" title="Ouvrir le détail"><i class="fas fa-eye"></i></button>
+                        <button class="btn-primary shipments-action" data-action="ship" data-id="${escAttr(id)}" data-carrier="${escAttr(trackingCarrier)}" data-tracking="${escAttr(trackingNumber)}"><i class="fas fa-truck"></i> Préparer</button>
+                    </td>
+                </tr>
+            `;
+        }).join('');
+    }
+
+    function handleShipmentsTableClick(ev) {
+        const btn = ev.target.closest('button[data-action]');
+        if (!btn) return;
+        ev.preventDefault();
+        const id = btn.dataset.id;
+        if (!id) return;
+        const action = btn.dataset.action;
+        try { setCurrentOrderContext(id); } catch(_) {}
+        if (action === 'details') {
+            try { openOrderDetails(id); } catch (e) { console.error('openOrderDetails error', e); showToast('Impossible d\'ouvrir la commande', 'error'); }
+            return;
+        }
+        if (action === 'ship') {
+            const carrier = btn.dataset.carrier || '';
+            const tracking = btn.dataset.tracking || '';
+            try { openShipModal(id, { carrier, tracking, shippedDate: '' }); }
+            catch (e) {
+                console.error('openShipModal error', e);
+                showToast('Impossible d\'ouvrir la fenêtre d\'expédition', 'error');
+            }
+        }
+    }
+
+    function handleTasksClearFilters() {
+        if (tasksSearchInput) tasksSearchInput.value = '';
+        if (tasksStatusFilter) tasksStatusFilter.value = '';
+        if (tasksPriorityFilter) tasksPriorityFilter.value = '';
+        if (tasksAssignedFilter) tasksAssignedFilter.value = '';
+        document.querySelectorAll('.tasks-chip').forEach(chip => chip.classList.toggle('active', chip.dataset.status === ''));
+        loadTasksList(1);
+    }
+
+    async function ensureTasksTeamLoaded() {
+        if (!tasksTeamPromise) tasksTeamPromise = loadTasksTeam();
+        return tasksTeamPromise;
+    }
+
+    async function loadTasksTeam() {
+        try {
+            const res = await fetch('/api/admin/tasks/team', { headers: { 'Authorization': `Basic ${authToken}` } });
+            if (!res.ok) return [];
+            const data = await res.json().catch(() => ({}));
+            if (!data.success || !Array.isArray(data.team)) return [];
+            tasksTeam = data.team;
+            tasksTeamMap = new Map(tasksTeam.map(member => [member.id, member]));
+            return tasksTeam;
+        } catch (e) {
+            console.error('tasks team load error', e);
+            return [];
+        }
+    }
+
+    function populateTasksAssignSelect(selectEl, selectedId) {
+        if (!selectEl) return;
+        selectEl.innerHTML = '<option value="">Non assignée</option>';
+        tasksTeam.forEach(member => {
+            const option = document.createElement('option');
+            option.value = member.id;
+            option.textContent = member.name;
+            if (selectedId && String(member.id) === String(selectedId)) option.selected = true;
+            selectEl.appendChild(option);
+        });
+    }
+
+    function updateTasksSummary(summary = {}) {
+        if (tasksOpenCount) tasksOpenCount.textContent = summary.open ?? 0;
+        if (tasksProgressCount) tasksProgressCount.textContent = summary.inProgress ?? 0;
+        if (tasksUrgentCount) tasksUrgentCount.textContent = summary.urgent ?? 0;
+        if (tasksDoneCount) tasksDoneCount.textContent = summary.done30 ?? 0;
+    }
+
+    async function loadTaskTemplates() {
+        if (!authToken) return [];
+        try {
+            const r = await fetch('/api/admin/tasks/templates', { headers: { 'Authorization': `Basic ${authToken}` } });
+            const d = await r.json().catch(() => ({}));
+            if (!r.ok || !d.success) return [];
+            return Array.isArray(d.templates) ? d.templates : [];
+        } catch (_) { return []; }
+    }
+
+    // ================== Paramètres: Modèles de tâches ==================
+    let taskTplSettingsInited = false;
+    let taskTplCache = [];
+    function initTaskTemplatesSettingsUIOnce() {
+        if (taskTplSettingsInited) return;
+        taskTplSettingsInited = true;
+        const saveBtn = document.getElementById('tasktpl-save-btn');
+        const refreshBtn = document.getElementById('tasktpl-refresh-btn');
+        const list = document.getElementById('tasktpl-list');
+        if (saveBtn) saveBtn.addEventListener('click', createTaskTemplateFromForm);
+        if (refreshBtn) refreshBtn.addEventListener('click', loadAndRenderTaskTemplatesSettings);
+        if (list) list.addEventListener('click', onTaskTemplateListClick);
+    }
+
+    async function loadAndRenderTaskTemplatesSettings() {
+        const tbody = document.getElementById('tasktpl-list');
+        const feedback = document.getElementById('tasktpl-feedback');
+        if (!tbody) return;
+        tbody.innerHTML = '<tr><td colspan="5" class="od-empty"><i class="fas fa-spinner fa-spin"></i> Chargement…</td></tr>';
+        const list = await loadTaskTemplates();
+        taskTplCache = Array.isArray(list) ? list : [];
+        if (!Array.isArray(list) || list.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="5" class="od-empty"><i class="fas fa-info-circle"></i> Aucun modèle</td></tr>';
+            if (feedback) feedback.textContent = '';
+            return;
+        }
+        tbody.innerHTML = list.map(t => `
+            <tr data-id="${t._id}">
+                <td>${esc(t.name || '')}</td>
+                <td>${esc(t.title || '')}</td>
+                <td>${esc(t.priority || '')}</td>
+                <td>${esc(Array.isArray(t.tags) ? t.tags.join(', ') : '')}</td>
+                <td>
+                    <button class="btn-secondary" data-action="tasktpl-edit" data-id="${t._id}" title="Modifier"><i class="fas fa-pen"></i></button>
+                    <button class="btn-secondary" data-action="tasktpl-duplicate" data-id="${t._id}" title="Dupliquer"><i class="fas fa-copy"></i></button>
+                    <button class="btn-danger" data-action="tasktpl-delete" data-id="${t._id}" title="Supprimer"><i class="fas fa-trash"></i></button>
+                </td>
+            </tr>
+        `).join('');
+        if (feedback) feedback.textContent = `${list.length} modèle(s)`;
+    }
+
+    async function createTaskTemplateFromForm() {
+        if (!authToken) return logout();
+        const name = (document.getElementById('tasktpl-name')?.value || '').trim();
+        const title = (document.getElementById('tasktpl-title')?.value || '').trim();
+        const description = (document.getElementById('tasktpl-description')?.value || '').trim();
+        const priority = document.getElementById('tasktpl-priority')?.value || 'medium';
+        const tagsRaw = (document.getElementById('tasktpl-tags')?.value || '').trim();
+        const tags = tagsRaw ? tagsRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
+        const feedback = document.getElementById('tasktpl-feedback');
+        try {
+            if (!name) throw new Error('Nom requis');
+            const r = await fetch('/api/admin/tasks/templates', {
+                method: 'POST',
+                headers: { 'Authorization': `Basic ${authToken}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name, title, description, priority, tags })
+            });
+            const d = await r.json().catch(() => ({}));
+            if (!r.ok || !d.success) throw new Error(d.message || 'Erreur serveur');
+            showToast('Modèle enregistré', 'success');
+            // Reset form
+            const ids = ['tasktpl-name','tasktpl-title','tasktpl-description','tasktpl-tags'];
+            ids.forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+            const pr = document.getElementById('tasktpl-priority'); if (pr) pr.value = 'medium';
+            await loadAndRenderTaskTemplatesSettings();
+            if (feedback) feedback.textContent = 'Modèle enregistré';
+        } catch (e) {
+            showToast(e.message || 'Erreur', 'error');
+            if (feedback) feedback.textContent = e.message || 'Erreur';
+        }
+    }
+
+    function onTaskTemplateListClick(e) {
+        const btn = e.target.closest('button[data-action]');
+        if (!btn) return;
+        const id = btn.dataset.id;
+        if (!id) return;
+        if (btn.dataset.action === 'tasktpl-delete') {
+            deleteTaskTemplate(id);
+        } else if (btn.dataset.action === 'tasktpl-edit') {
+            openTaskTemplateEditModal(id);
+        } else if (btn.dataset.action === 'tasktpl-duplicate') {
+            duplicateTaskTemplate(id);
+        }
+    }
+
+    async function deleteTaskTemplate(id) {
+        if (!authToken) return logout();
+        const ok = confirm('Supprimer ce modèle ?');
+        if (!ok) return;
+        try {
+            const r = await fetch(`/api/admin/tasks/templates/${encodeURIComponent(id)}`, { method: 'DELETE', headers: { 'Authorization': `Basic ${authToken}` } });
+            const d = await r.json().catch(() => ({}));
+            if (!r.ok || !d.success) throw new Error(d.message || 'Erreur serveur');
+            showToast('Modèle supprimé', 'success');
+            await loadAndRenderTaskTemplatesSettings();
+        } catch (e) {
+            showToast(e.message || 'Erreur suppression', 'error');
+        }
+    }
+
+    function findTplInCache(id) {
+        return taskTplCache.find(t => String(t._id) === String(id));
+    }
+
+    async function openTaskTemplateEditModal(id) {
+        const tpl = findTplInCache(id);
+        if (!tpl) { await loadAndRenderTaskTemplatesSettings(); }
+        const current = findTplInCache(id);
+        if (!current) return showToast('Modèle introuvable', 'error');
+
+        const root = ensureModalRoot();
+        root.style.display = 'flex';
+        root.innerHTML = '';
+        const modal = document.createElement('div');
+        modal.className = 'cpf-modal';
+        modal.style.maxWidth = '640px';
+        modal.innerHTML = `
+            <div class="cpf-modal-header">
+                <div class="icon"><i class="fas fa-tasks"></i></div>
+                <div class="cpf-modal-title">Modifier le modèle</div>
+            </div>
+            <div class="cpf-modal-body">
+                <div class="form-group">
+                    <label for="etpl-name">Nom du modèle</label>
+                    <input type="text" id="etpl-name" />
+                </div>
+                <div class="form-group">
+                    <label for="etpl-title">Titre par défaut</label>
+                    <input type="text" id="etpl-title" />
+                </div>
+                <div class="form-group">
+                    <label for="etpl-description">Description</label>
+                    <textarea id="etpl-description" rows="3"></textarea>
+                </div>
+                <div class="form-group">
+                    <label for="etpl-priority">Priorité</label>
+                    <select id="etpl-priority">
+                        <option value="low">Basse</option>
+                        <option value="medium">Moyenne</option>
+                        <option value="high">Haute</option>
+                        <option value="urgent">Urgent</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="etpl-tags">Tags (séparés par des virgules)</label>
+                    <input type="text" id="etpl-tags" />
+                </div>
+                <div id="etpl-error" class="login-error" style="display:none;"></div>
+            </div>
+            <div class="cpf-modal-actions">
+                <button class="cpf-btn" data-action="cancel">Annuler</button>
+                <button class="cpf-btn cpf-btn-primary" data-action="confirm">Enregistrer</button>
+            </div>
+        `;
+        root.appendChild(modal);
+        const onCleanup = () => { root.style.display = 'none'; root.innerHTML = ''; };
+        modal.querySelector('[data-action="cancel"]').addEventListener('click', onCleanup);
+
+        // Prefill
+        modal.querySelector('#etpl-name').value = current.name || '';
+        modal.querySelector('#etpl-title').value = current.title || '';
+        modal.querySelector('#etpl-description').value = current.description || '';
+        modal.querySelector('#etpl-priority').value = current.priority || 'medium';
+        modal.querySelector('#etpl-tags').value = Array.isArray(current.tags) ? current.tags.join(', ') : '';
+
+        modal.querySelector('[data-action="confirm"]').addEventListener('click', async () => {
+            const name = (modal.querySelector('#etpl-name')?.value || '').trim();
+            const title = (modal.querySelector('#etpl-title')?.value || '').trim();
+            const description = (modal.querySelector('#etpl-description')?.value || '').trim();
+            const priority = modal.querySelector('#etpl-priority')?.value || 'medium';
+            const tagsRaw = (modal.querySelector('#etpl-tags')?.value || '').trim();
+            const tags = tagsRaw ? tagsRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
+            const errEl = modal.querySelector('#etpl-error');
+            if (!name) { errEl.textContent = 'Nom requis'; errEl.style.display = 'block'; return; }
+            try {
+                const r = await fetch(`/api/admin/tasks/templates/${encodeURIComponent(current._id)}`, {
+                    method: 'PUT',
+                    headers: { 'Authorization': `Basic ${authToken}`, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name, title, description, priority, tags })
+                });
+                const d = await r.json().catch(() => ({}));
+                if (!r.ok || !d.success) throw new Error(d.message || 'Erreur');
+                showToast('Modèle mis à jour', 'success');
+                onCleanup();
+                await loadAndRenderTaskTemplatesSettings();
+            } catch (e) {
+                errEl.textContent = e.message || 'Erreur';
+                errEl.style.display = 'block';
+            }
+        });
+    }
+
+    async function duplicateTaskTemplate(id) {
+        const tpl = findTplInCache(id);
+        if (!tpl) return showToast('Modèle introuvable', 'error');
+        const proposed = `${tpl.name || 'Modèle'} (copie)`;
+        const name = (prompt('Nom pour la copie ?', proposed) || '').trim();
+        if (!name) return;
+        try {
+            const r = await fetch(`/api/admin/tasks/templates/${encodeURIComponent(id)}/duplicate`, {
+                method: 'POST',
+                headers: { 'Authorization': `Basic ${authToken}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name })
+            });
+            const d = await r.json().catch(() => ({}));
+            if (!r.ok || !d.success) throw new Error(d.message || 'Erreur');
+            showToast('Modèle dupliqué', 'success');
+            await loadAndRenderTaskTemplatesSettings();
+        } catch (e) {
+            showToast(e.message || 'Erreur duplication', 'error');
+        }
+    }
+
+    // Délégation globale (fallback) au cas où l'init n'aurait pas été appelée
+    if (!window.__taskTplDelegation) {
+        window.__taskTplDelegation = true;
+        document.addEventListener('click', (ev) => {
+            const saveBtn = ev.target.closest('#tasktpl-save-btn');
+            if (saveBtn) {
+                ev.preventDefault();
+                try { createTaskTemplateFromForm(); } catch(_) {}
+                return;
+            }
+            const delBtn = ev.target.closest('button[data-action="tasktpl-delete"]');
+            if (delBtn && delBtn.dataset.id) {
+                ev.preventDefault();
+                try { deleteTaskTemplate(delBtn.dataset.id); } catch(_) {}
+                return;
+            }
+            const editBtn = ev.target.closest('button[data-action="tasktpl-edit"]');
+            if (editBtn && editBtn.dataset.id) {
+                ev.preventDefault();
+                try { openTaskTemplateEditModal(editBtn.dataset.id); } catch(_) {}
+                return;
+            }
+            const dupBtn = ev.target.closest('button[data-action="tasktpl-duplicate"]');
+            if (dupBtn && dupBtn.dataset.id) {
+                ev.preventDefault();
+                try { duplicateTaskTemplate(dupBtn.dataset.id); } catch(_) {}
+                return;
+            }
+        });
+    }
+
+    // Écouteur dédié sur le tbody des commandes (plus ciblé)
+    (function bindOrdersTbodyEdit() {
+        const tbody = document.getElementById('orders-list');
+        if (!tbody || tbody.__editBound) return;
+        tbody.__editBound = true;
+        tbody.addEventListener('click', (ev) => {
+            const editBtn = ev.target.closest('button[data-action="edit"]');
+            if (!editBtn) return;
+            ev.preventDefault();
+            const id = editBtn.dataset.id || editBtn.getAttribute('data-id');
+            if (id) {
+                try { console.debug('[orders] click edit ->', id); openEditOrderModal(id); } catch(e) { console.error('[orders] openEditOrderModal error', e); }
+            } else {
+                try { showToast('Commande inconnue (aucun id)', 'error'); } catch(_) {}
+            }
+        });
+    })();
+
+    // Fallback global: bouton #od-edit (ex: hors tableau)
+    (function bindGlobalOdEditButton() {
+        if (window.__odEditBound) return; window.__odEditBound = true;
+        document.addEventListener('click', (ev) => {
+            const btn = ev.target.closest('#od-edit');
+            if (!btn) return;
+            ev.preventDefault();
+            ev.stopPropagation();
+            if (typeof ev.stopImmediatePropagation === 'function') ev.stopImmediatePropagation();
+            let orderId = (window.resolveCurrentOrderId ? window.resolveCurrentOrderId(btn) : '');
+            console.debug('[orders] #od-edit clicked, resolved id =', orderId || '(none)');
+            if (orderId) {
+                try { openEditOrderModal(orderId); } catch(e) { console.error('[orders] openEditOrderModal error', e); }
+            } else {
+                try { showToast('Impossible d\'identifier la commande à modifier', 'error'); } catch(_) {}
+            }
+        }, true);
+    })();
+
+    // Écouteur fort direct sur #od-edit (empêche tout autre handler de bloquer)
+    (function strongBindOdEdit() {
+        function bind() {
+            const btn = document.getElementById('od-edit');
+            if (!btn || btn.__strongBound) return;
+            btn.__strongBound = true;
+            btn.addEventListener('click', (ev) => {
+                ev.preventDefault();
+                ev.stopPropagation();
+                if (typeof ev.stopImmediatePropagation === 'function') ev.stopImmediatePropagation();
+                const id = (window.resolveCurrentOrderId ? window.resolveCurrentOrderId(btn) : '');
+                console.debug('[orders] #od-edit strong handler, id =', id || '(none)');
+                if (id) { try { openEditOrderModal(id); } catch(e) { console.error('[orders] openEditOrderModal error', e); } }
+                else { try { showToast('Impossible d\'identifier la commande à modifier', 'error'); } catch(_) {} }
+            }, true);
+        }
+        bind();
+        try {
+            const mo = new MutationObserver(() => bind());
+            mo.observe(document.body, { childList: true, subtree: true });
+        } catch(_) {}
+    })();
+
+    async function loadTasksList(page = 1) {
+        if (!authToken) return logout();
+        currentTasksPage = page;
+        if (!tasksTableBody) return;
+
+        try {
+            tasksTableBody.innerHTML = '<tr><td colspan="8">Chargement…</td></tr>';
+            const q = (tasksSearchInput?.value || '').trim();
+            const status = (tasksStatusFilter?.value || '').trim();
+            const priority = (tasksPriorityFilter?.value || '').trim();
+            let assignedTo = (tasksAssignedFilter?.value || '').trim();
+
+            if ((assignedTo === 'me' || assignedTo === '') && !currentUserId) await fetchCurrentUser();
+            if (assignedTo === 'me') assignedTo = currentUserId || '';
+            const params = new URLSearchParams();
+            params.set('page', String(page));
+            params.set('limit', '25');
+            if (q) params.set('q', q);
+            if (status) params.set('status', status);
+            if (priority) params.set('priority', priority);
+            if (assignedTo === 'unassigned') params.set('assignedTo', 'unassigned');
+            else if (assignedTo && assignedTo !== 'all') params.set('assignedTo', assignedTo);
+
+            // Lire l'état des filtres rapides et propager en query
+            const qfMyUrgent = document.getElementById('qf-my-urgent');
+            const qfToday = document.getElementById('qf-today');
+            const qfOverdue = document.getElementById('qf-overdue');
+            const qfUnassigned = document.getElementById('qf-unassigned');
+
+            const isPressed = (el) => !!el && el.getAttribute('aria-pressed') === 'true';
+            if (isPressed(qfMyUrgent)) {
+                params.set('urgentOnly', '1');
+            }
+            if (isPressed(qfToday)) {
+                params.set('dueToday', '1');
+            }
+            if (isPressed(qfOverdue)) {
+                params.set('overdue', '1');
+            }
+            if (isPressed(qfUnassigned)) {
+                params.set('unassigned', '1');
+            }
+
+            const res = await fetch(`/api/admin/tasks?${params.toString()}`, { headers: { 'Authorization': `Basic ${authToken}` } });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok || !data.success) throw new Error(data.message || 'Erreur chargement');
+
+            renderTasksList(Array.isArray(data.tasks) ? data.tasks : []);
+            updateTasksSummary(data.summary || {});
+
+            if (tasksPagination) {
+                const total = Number(data.total || 0);
+                const limit = Number(data.limit || 25);
+                const cur = Number(data.page || 1);
+                const pages = Math.max(1, Math.ceil(total / limit));
+                tasksPagination.innerHTML = '';
+                const info = document.createElement('span');
+                info.textContent = `Page ${cur} / ${pages} — ${total} tâche(s)`;
+                const prev = document.createElement('button');
+                prev.className = 'btn-secondary';
+                prev.textContent = 'Précédent';
+                prev.disabled = cur <= 1;
+                prev.addEventListener('click', () => loadTasksList(cur - 1));
+                const next = document.createElement('button');
+                next.className = 'btn-secondary';
+                next.textContent = 'Suivant';
+                next.disabled = cur >= pages;
+                next.addEventListener('click', () => loadTasksList(cur + 1));
+                tasksPagination.appendChild(prev);
+                tasksPagination.appendChild(info);
+                tasksPagination.appendChild(next);
+            }
+
+            if (cachedTasksMap.size === 0) {
+                resetTasksSidepanel();
+                return;
+            }
+            if (tasksSelectedId && cachedTasksMap.has(tasksSelectedId)) {
+                selectTask(tasksSelectedId);
+            } else {
+                const first = Array.from(cachedTasksMap.keys())[0];
+                selectTask(first);
+            }
+        } catch (e) {
+            console.error('loadTasksList', e);
+            showToast(e.message || 'Erreur chargement tâches', 'error');
+            tasksTableBody.innerHTML = '<tr><td colspan="8">Erreur chargement</td></tr>';
+            resetTasksSidepanel();
+        }
+    }
+
+    function renderTasksList(tasks) {
+        if (!tasksTableBody) return;
+        cachedTasksMap.clear();
+        if (!Array.isArray(tasks) || tasks.length === 0) {
+            tasksTableBody.innerHTML = '<tr><td colspan="8">Aucune tâche</td></tr>';
+            return;
+        }
+
+        const priorityLabels = { urgent: 'Urgent', high: 'Haute', medium: 'Moyenne', low: 'Basse' };
+        const statusLabels = { todo: 'À faire', in_progress: 'En cours', done: 'Terminée' };
+
+        tasksTableBody.innerHTML = tasks.map(t => {
+            cachedTasksMap.set(t._id, t);
+            const description = t.description ? `${esc(t.description).slice(0, 120)}${t.description.length > 120 ? '…' : ''}` : '';
+            const dueDate = t.dueDate ? new Date(t.dueDate).toLocaleDateString('fr-FR') : '—';
+            const assignedLabel = t.assignedToName || 'Non assignée';
+            const statusKey = t.status || 'todo';
+            const priorityKey = t.priority || 'medium';
+            const statusBadge = `tasks-badge status-${statusKey}`;
+            const priorityBadge = `tasks-badge priority-${priorityKey}`;
+            return `
+                <tr class="tasks-row" data-id="${t._id}">
+                    <td class="tasks-select-cell">
+                        <i class="${t.status === 'done' ? 'fas fa-check-circle" style="color:#10b981;' : 'far fa-circle" style="color:#9ca3af;'}"></i>
+                    </td>
+                    <td class="tasks-title-cell">
+                        <strong>${esc(t.title)}</strong>
+                        ${description ? `<small>${description}</small>` : ''}
+                    </td>
+                    <td><span class="${priorityBadge}">${priorityLabels[priorityKey] || esc(t.priority || '')}</span></td>
+                    <td>${assignedLabel ? `<span class="tasks-assignee-pill"><i class="fas fa-user"></i>${esc(assignedLabel)}</span>` : '<span class="tasks-assignee-pill">Non assignée</span>'}</td>
+                    <td><span class="${statusBadge}">${statusLabels[statusKey] || esc(statusKey)}</span></td>
+                    <td>${dueDate}</td>
+                    <td><small>${esc(t.createdByName || '—')}</small></td>
+                    <td class="tasks-actions">
+                        <button class="btn-secondary" data-action="edit" data-id="${t._id}" title="Modifier"><i class="fas fa-pen"></i></button>
+                        <button class="btn-danger" data-action="delete" data-id="${t._id}" title="Supprimer"><i class="fas fa-trash"></i></button>
+                    </td>
+                </tr>
+            `;
+        }).join('');
+    }
+
+    function handleTasksTableClick(event) {
+        const actionBtn = event.target.closest('button[data-action]');
+        if (actionBtn) {
+            const id = actionBtn.dataset.id;
+            if (!id) return;
+            if (actionBtn.dataset.action === 'edit') {
+                openTaskModal(id);
+            } else if (actionBtn.dataset.action === 'delete') {
+                deleteTaskById(id);
+            }
+            return;
+        }
+        const row = event.target.closest('tr[data-id]');
+        if (!row) return;
+        selectTask(row.dataset.id);
+    }
+
+    function selectTask(taskId) {
+        if (!taskId || !cachedTasksMap.has(taskId)) {
+            resetTasksSidepanel();
+            return;
+        }
+        tasksSelectedId = taskId;
+        if (tasksTableBody) {
+            tasksTableBody.querySelectorAll('tr').forEach(tr => tr.classList.toggle('is-selected', tr.dataset.id === taskId));
+        }
+        const task = cachedTasksMap.get(taskId);
+        updateTasksSidepanel(task);
+    }
+
+    function resetTasksSidepanel() {
+        if (tasksSidepanelContent) tasksSidepanelContent.hidden = true;
+        if (tasksSidepanelEmpty) tasksSidepanelEmpty.hidden = false;
+        if (tasksSidepanelEditBtn) tasksSidepanelEditBtn.disabled = true;
+    }
+
+    function updateTasksSidepanel(task) {
+        if (!task) {
+            resetTasksSidepanel();
+            return;
+        }
+        if (tasksSidepanelContent) tasksSidepanelContent.hidden = false;
+        if (tasksSidepanelEmpty) tasksSidepanelEmpty.hidden = true;
+        if (tasksSidepanelEditBtn) tasksSidepanelEditBtn.disabled = false;
+
+        const statusLabels = { todo: 'À faire', in_progress: 'En cours', done: 'Terminée' };
+        if (tasksSidepanelStatus) tasksSidepanelStatus.textContent = statusLabels[task.status] || (task.status || '—');
+        if (tasksSidepanelTitle) tasksSidepanelTitle.textContent = task.title || '—';
+        if (tasksSidepanelMeta) tasksSidepanelMeta.textContent = task.updatedAt ? `Mis à jour le ${formatDateTime(task.updatedAt)}` : '';
+        if (tasksSidepanelDescription) {
+            tasksSidepanelDescription.textContent = task.description ? task.description : 'Aucune description.';
+            tasksSidepanelDescription.classList.toggle('tasks-sidepanel__muted', !task.description);
+        }
+        if (tasksSidepanelPriority) tasksSidepanelPriority.textContent = task.priority ? task.priority.toUpperCase() : '—';
+        if (tasksSidepanelAssigned) tasksSidepanelAssigned.textContent = task.assignedToName || 'Non assignée';
+        if (tasksSidepanelCreatedBy) tasksSidepanelCreatedBy.textContent = task.createdByName || '—';
+        if (tasksSidepanelCreatedAt) tasksSidepanelCreatedAt.textContent = task.createdAt ? formatDateTime(task.createdAt) : '—';
+        if (tasksSidepanelDue) tasksSidepanelDue.textContent = task.dueDate ? new Date(task.dueDate).toLocaleDateString('fr-FR') : '—';
+
+        if (tasksSidepanelTimeline) {
+            const items = [];
+            if (task.createdAt) items.push({ label: 'Créée', date: task.createdAt, note: task.createdByName ? `Par ${task.createdByName}` : null });
+            if (task.dueDate) items.push({ label: 'Échéance', date: task.dueDate, note: 'Date cible' });
+            if (task.completedAt) items.push({ label: 'Terminée', date: task.completedAt, note: 'Marquée comme terminée' });
+
+            if (items.length === 0) {
+                tasksSidepanelTimeline.innerHTML = '<span class="tasks-sidepanel__muted">Aucun événement enregistré.</span>';
+            } else {
+                tasksSidepanelTimeline.innerHTML = items.map(item => `
+                    <div class="tasks-timeline__item">
+                        <strong>${item.label}</strong>
+                        <span>${formatDateTime(item.date)}</span>
+                        ${item.note ? `<span>${esc(item.note)}</span>` : ''}
+                    </div>
+                `).join('');
+            }
+        }
+    }
+
+    function formatDateTime(dateLike) {
+        try {
+            const d = new Date(dateLike);
+            if (Number.isNaN(d.getTime())) return '—';
+            return d.toLocaleString('fr-FR', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+        } catch {
+            return '—';
+        }
+    }
+
+    async function deleteTaskById(id) {
+        if (!id) return;
+        const confirmDelete = confirm('Supprimer cette tâche ?');
+        if (!confirmDelete) return;
+        try {
+            const res = await fetch(`/api/admin/tasks/${encodeURIComponent(id)}`, { method: 'DELETE', headers: { 'Authorization': `Basic ${authToken}` } });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok || !data.success) throw new Error(data.message || 'Erreur');
+            showToast('Tâche supprimée', 'success');
+            if (tasksSelectedId === id) tasksSelectedId = null;
+            loadTasksList(currentTasksPage);
+        } catch (e) {
+            showToast(e.message || 'Erreur suppression', 'error');
+        }
+    }
+
+    async function openTaskModal(taskId = null) {
+        await ensureTasksTeamLoaded();
+        const root = ensureModalRoot();
+        root.style.display = 'flex';
+        root.innerHTML = '';
+        const modal = document.createElement('div');
+        modal.className = 'cpf-modal';
+        modal.style.maxWidth = '640px';
+        modal.innerHTML = `
+            <div class="cpf-modal-header">
+                <div class="icon"><i class="fas fa-tasks"></i></div>
+                <div class="cpf-modal-title">${taskId ? 'Modifier la tâche' : 'Nouvelle tâche'}</div>
+            </div>
+            <div class="cpf-modal-body">
+                <div class="form-group">
+                    <label for="task-template">Modèle</label>
+                    <select id="task-template"><option value="">Aucun</option></select>
+                </div>
+                <div class="form-group">
+                    <label for="task-title">Titre *</label>
+                    <input type="text" id="task-title" required />
+                </div>
+                <div class="form-group">
+                    <label for="task-description">Description</label>
+                    <textarea id="task-description" rows="3"></textarea>
+                </div>
+                <div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+                    <div class="form-group">
+                        <label for="task-status">Statut</label>
+                        <select id="task-status">
+                            <option value="todo">À faire</option>
+                            <option value="in_progress">En cours</option>
+                            <option value="done">Terminée</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="task-priority">Priorité</label>
+                        <select id="task-priority">
+                            <option value="low">Basse</option>
+                            <option value="medium" selected>Moyenne</option>
+                            <option value="high">Haute</option>
+                            <option value="urgent">Urgent</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="task-due-date">Échéance</label>
+                    <input type="date" id="task-due-date" />
+                </div>
+                <div class="form-group">
+                    <label for="task-assigned">Assigner à</label>
+                    <select id="task-assigned">
+                        <option value="">Non assignée</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="task-tags">Tags (séparés par des virgules)</label>
+                    <input type="text" id="task-tags" placeholder="ex: rappel, client, livraison" />
+                </div>
+                <div id="task-error" class="login-error" style="display:none;"></div>
+            </div>
+            <div class="cpf-modal-actions">
+                <button class="cpf-btn" data-action="cancel">Annuler</button>
+                <button class="cpf-btn" data-action="save-template">Enregistrer comme modèle</button>
+                <button class="cpf-btn cpf-btn-primary" data-action="confirm">Enregistrer</button>
+            </div>
+        `;
+        root.appendChild(modal);
+        const assignSelect = modal.querySelector('#task-assigned');
+        populateTasksAssignSelect(assignSelect, null);
+
+        // Charger les modèles et alimenter la liste
+        try {
+            const templates = await loadTaskTemplates();
+            const tplSel = modal.querySelector('#task-template');
+            if (tplSel && Array.isArray(templates)) {
+                templates.forEach(t => {
+                    const opt = document.createElement('option');
+                    opt.value = t._id;
+                    opt.textContent = t.name || t.title || '(Sans nom)';
+                    tplSel.appendChild(opt);
+                });
+                tplSel.addEventListener('change', () => {
+                    const id = tplSel.value;
+                    const found = templates.find(x => x._id === id);
+                    if (found) {
+                        const titleEl = modal.querySelector('#task-title');
+                        const descEl = modal.querySelector('#task-description');
+                        const prioEl = modal.querySelector('#task-priority');
+                        const tagsEl = modal.querySelector('#task-tags');
+                        if (found.title && titleEl && !titleEl.value) titleEl.value = found.title;
+                        if (descEl && found.description) descEl.value = found.description;
+                        if (prioEl && found.priority) prioEl.value = found.priority;
+                        if (tagsEl && Array.isArray(found.tags)) tagsEl.value = found.tags.join(', ');
+                    }
+                });
+            }
+        } catch (_) {}
+
+        const onCleanup = () => { root.style.display = 'none'; root.innerHTML = ''; };
+        modal.querySelector('[data-action="cancel"]').addEventListener('click', onCleanup);
+
+        if (taskId && cachedTasksMap.has(taskId)) {
+            const task = cachedTasksMap.get(taskId);
+            modal.querySelector('#task-title').value = task.title || '';
+            modal.querySelector('#task-description').value = task.description || '';
+            modal.querySelector('#task-status').value = task.status || 'todo';
+            modal.querySelector('#task-priority').value = task.priority || 'medium';
+            if (task.dueDate) modal.querySelector('#task-due-date').value = new Date(task.dueDate).toISOString().slice(0, 10);
+            if (task.assignedTo) populateTasksAssignSelect(assignSelect, task.assignedTo);
+            if (Array.isArray(task.tags) && task.tags.length) {
+                const tagsEl = modal.querySelector('#task-tags');
+                if (tagsEl) tagsEl.value = task.tags.join(', ');
+            }
+        }
+
+        const saveTplBtn = modal.querySelector('[data-action="save-template"]');
+        if (saveTplBtn) saveTplBtn.addEventListener('click', async () => {
+            try {
+                const name = (prompt('Nom du modèle ?') || '').trim();
+                if (!name) return;
+                const title = (modal.querySelector('#task-title')?.value || '').trim();
+                const description = (modal.querySelector('#task-description')?.value || '').trim();
+                const priority = modal.querySelector('#task-priority')?.value || 'medium';
+                const tagsRaw = modal.querySelector('#task-tags')?.value || '';
+                const tags = tagsRaw.split(',').map(s => s.trim()).filter(Boolean);
+                const r = await fetch('/api/admin/tasks/templates', { method: 'POST', headers: { 'Authorization': `Basic ${authToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ name, title, description, priority, tags }) });
+                const d = await r.json().catch(() => ({}));
+                if (!r.ok || !d.success) throw new Error(d.message || 'Erreur');
+                showToast('Modèle enregistré', 'success');
+            } catch (e) {
+                showToast(e.message || 'Erreur enregistrement modèle', 'error');
+            }
+        });
+
+        modal.querySelector('[data-action="confirm"]').addEventListener('click', async () => {
+            const title = (modal.querySelector('#task-title')?.value || '').trim();
+            const description = (modal.querySelector('#task-description')?.value || '').trim();
+            const status = modal.querySelector('#task-status')?.value || 'todo';
+            const priority = modal.querySelector('#task-priority')?.value || 'medium';
+            const dueDate = modal.querySelector('#task-due-date')?.value || '';
+            const assignedTo = assignSelect?.value || '';
+            const tagsRaw = modal.querySelector('#task-tags')?.value || '';
+            const tags = tagsRaw.split(',').map(s => s.trim()).filter(Boolean);
+            const errEl = modal.querySelector('#task-error');
+            if (!title) {
+                errEl.textContent = 'Titre requis';
+                errEl.style.display = 'block';
+                return;
+            }
+            try {
+                const payload = { title, description, status, priority, dueDate, assignedTo, tags };
+                if (assignedTo && tasksTeamMap.has(assignedTo)) payload.assignedToName = tasksTeamMap.get(assignedTo).name;
+                const url = taskId ? `/api/admin/tasks/${encodeURIComponent(taskId)}` : '/api/admin/tasks';
+                const method = taskId ? 'PUT' : 'POST';
+                const res = await fetch(url, { method, headers: { 'Authorization': `Basic ${authToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok || !data.success) throw new Error(data.message || 'Erreur');
+                showToast(taskId ? 'Tâche mise à jour' : 'Tâche créée', 'success');
+                onCleanup();
+                loadTasksList(currentTasksPage);
+            } catch (e) {
+                errEl.textContent = e.message || 'Erreur';
+                errEl.style.display = 'block';
+            }
+        });
+    }
+
+    window.editTask = (id) => openTaskModal(id);
+    window.deleteTask = deleteTaskById;
 
     function formatMoney(amount, currency) {
         const value = isNaN(Number(amount)) ? 0 : Number(amount);
@@ -2505,6 +4034,14 @@ async function checkAuth() {
         } catch(_) {
             return `${value.toFixed(2)} ${cur}`;
         }
+    }
+
+    function debounce(fn, delay = 300) {
+        let timer = null;
+        return function (...args) {
+            clearTimeout(timer);
+            timer = setTimeout(() => fn.apply(this, args), delay);
+        };
     }
 
     // Helpers d'échappement HTML (sécurité XSS + erreurs esc/escAttr)
@@ -2545,10 +4082,10 @@ async function checkAuth() {
         const sortSel = document.getElementById('orders-sort');
         const exportBtn = document.getElementById('orders-export-btn');
         const tbody = document.getElementById('orders-list');
-        
+        const missingRefCbx = document.getElementById('orders-missing-techref');
+
         if (createBtn) createBtn.addEventListener('click', () => openCreateOrderModal());
         if (refreshBtn) refreshBtn.addEventListener('click', () => loadOrdersList(1));
-        const missingRefCbx = document.getElementById('orders-missing-techref');
         if (missingRefCbx) missingRefCbx.addEventListener('change', () => loadOrdersList(1));
         if (typeSel) typeSel.addEventListener('change', () => loadOrdersList(1));
         if (rebuildTechBtn) rebuildTechBtn.addEventListener('click', async () => {
@@ -2618,6 +4155,33 @@ async function checkAuth() {
             }
         });
         if (tbody) tbody.addEventListener('click', async (e) => {
+            const statusActionEl = e.target.closest('[data-status-action]');
+            if (statusActionEl) {
+                e.preventDefault();
+                e.stopPropagation();
+                const actionType = statusActionEl.dataset.statusAction;
+                const wrapper = statusActionEl.closest('.order-status-wrapper');
+                if (!wrapper) return;
+                if (actionType === 'toggle') {
+                    toggleOrderStatusMenu(wrapper);
+                } else if (actionType === 'choose') {
+                    if (statusActionEl.classList.contains('is-current')) {
+                        closeOrderStatusMenu();
+                        return;
+                    }
+                    const newStatus = statusActionEl.dataset.statusValue;
+                    const orderId = statusActionEl.dataset.orderId;
+                    if (!newStatus || !orderId) return;
+                    wrapper.classList.add('is-loading');
+                    try {
+                        await updateOrderStatus(orderId, newStatus);
+                    } finally {
+                        wrapper.classList.remove('is-loading');
+                        closeOrderStatusMenu();
+                    }
+                }
+                return;
+            }
             const btn = e.target.closest('button[data-action]');
             if (!btn) {
                 // Ignorer les clics sur les cases à cocher de sélection
@@ -2626,13 +4190,16 @@ async function checkAuth() {
                     e.stopPropagation();
                     return;
                 }
+                closeOrderStatusMenu();
                 // Si clic sur une ligne (hors boutons), ouvrir détails
                 const row = e.target.closest('tr.order-row');
                 if (row && row.dataset.id) {
+                    try { setCurrentOrderContext(row.dataset.id); } catch(_) {}
                     openOrderDetails(row.dataset.id);
                 }
                 return;
             }
+            closeOrderStatusMenu();
             const action = btn.dataset.action;
             if (action === 'copy-vin') {
                 try {
@@ -2661,7 +4228,12 @@ async function checkAuth() {
             if (!id || !action) return;
             try {
                 if (action === 'ship') {
-                    openShipModal(id);
+                    const shipOptions = {
+                        carrier: (btn.dataset.carrier || '').trim(),
+                        tracking: (btn.dataset.tracking || '').trim(),
+                        shippedDate: (btn.dataset.shippedDate || '').trim()
+                    };
+                    openShipModal(id, shipOptions);
                 } else if (action === 'delete') {
                     const ok = window.confirm('Supprimer définitivement cette commande ?');
                     if (!ok) return;
@@ -2828,8 +4400,26 @@ async function checkAuth() {
         });
     }
 
+    function parseSort(val) {
+        switch (val) {
+            case 'date_desc': return ['date', 'desc'];
+            case 'date_asc': return ['date', 'asc'];
+            case 'amount_desc': return ['amount', 'desc'];
+            case 'amount_asc': return ['amount', 'asc'];
+            case 'number_desc': return ['number', 'desc'];
+            case 'number_asc': return ['number', 'asc'];
+            case 'status_asc': return ['status', 'asc'];
+            case 'status_desc': return ['status', 'desc'];
+            case 'type_asc': return ['type', 'asc'];
+            case 'type_desc': return ['type', 'desc'];
+            default: return ['date', 'desc'];
+        }
+    }
+
     async function loadOrdersList(page = 1) {
         try {
+            window.__ordersCurrentPage = page;
+            closeOrderStatusMenu();
             if (!authToken) return logout();
             const tbody = document.getElementById('orders-list');
             const pag = document.getElementById('orders-pagination');
@@ -2890,6 +4480,8 @@ async function checkAuth() {
     function renderOrdersList(data) {
         const tbody = document.getElementById('orders-list');
         if (!tbody) return;
+        bindOrderStatusMenuGlobalHandlers();
+        closeOrderStatusMenu();
         const selectAll = document.getElementById('orders-select-all');
         const bulkBar = document.getElementById('orders-bulk-actions');
         const bulkCount = document.getElementById('orders-bulk-count');
@@ -2946,16 +4538,21 @@ async function checkAuth() {
                 'autres': 'Autres'
             };
             const ptype = ptypeMap[ptypeRaw] || '';
-            const st = renderStatusBadge(o.status || '—');
             const amt = formatMoney((o.totals && o.totals.amount) || 0, (o.totals && o.totals.currency) || 'EUR');
+            const statusWrapperHtml = renderOrderStatusCell(o);
             const actions = document.createElement('div');
             actions.style.display = 'flex';
+            actions.style.flexWrap = 'wrap';
             actions.style.gap = '6px';
             const btnShip = document.createElement('button');
             btnShip.className = 'btn-secondary';
             btnShip.textContent = 'Expédier';
             btnShip.dataset.action = 'ship';
             btnShip.dataset.id = o._id;
+            const shippingInfo = o.shipping || {};
+            btnShip.dataset.carrier = shippingInfo.carrier || '';
+            btnShip.dataset.tracking = shippingInfo.trackingNumber || '';
+            btnShip.dataset.shippedDate = shippingInfo.shippedAt ? new Date(shippingInfo.shippedAt).toISOString().slice(0, 10) : '';
             // Pastille état Réf technique (si requise)
             const techReq = !!(o.meta && o.meta.technicalRefRequired);
             const engine = (o.meta && o.meta.engineDisplacement ? String(o.meta.engineDisplacement).trim() : '');
@@ -2988,6 +4585,14 @@ async function checkAuth() {
             btnDel.title = 'Supprimer';
             btnDel.dataset.action = 'delete';
             btnDel.dataset.id = o._id;
+            // Bouton Modifier (éditer la commande)
+            const btnEdit = document.createElement('button');
+            btnEdit.className = 'btn-secondary btn-icon';
+            btnEdit.innerHTML = "<i class='fas fa-pen'></i>";
+            btnEdit.title = 'Modifier';
+            btnEdit.dataset.action = 'edit';
+            btnEdit.dataset.id = o._id;
+            btnEdit.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); try { console.debug('[orders] direct edit btn ->', o._id); openEditOrderModal(o._id); } catch(err) { console.error('[orders] openEditOrderModal error', err); } });
             try {
                 if (o.shipping && o.shipping.estimatedDeliveryAt) {
                     btnEst.title = 'Livraison estimée: ' + new Date(o.shipping.estimatedDeliveryAt).toLocaleDateString('fr-FR');
@@ -2999,18 +4604,19 @@ async function checkAuth() {
             if (dot) actions.appendChild(dot);
             actions.appendChild(btnRef);
             actions.appendChild(btnEst);
+            actions.appendChild(btnEdit);
             actions.appendChild(btnDel);
             const noteBadge = hasNotes ? '<span class="orders-note-badge" title="Note interne disponible"><i class="fas fa-sticky-note"></i></span>' : '';
             const checkedAttr = window.__ordersSelected.has(o._id) ? ' checked' : '';
             tr.innerHTML = `
-                <td style="text-align:center;"><input type="checkbox" class="order-select" data-id="${escAttr(o._id)}"${checkedAttr}></td>
+                <td style="text-align:center;"><input type="checkbox" class="order-select" data-id="${escapeAttr(o._id)}"${checkedAttr}></td>
                 <td>${num} ${noteBadge}</td>
                 <td>${created}</td>
                 <td>${client}</td>
                 <td>${vinCell}</td>
                 <td>${src}</td>
                 <td>${ptype}</td>
-                <td>${st}</td>
+                <td>${statusWrapperHtml}</td>
                 <td>${amt}</td>
                 <td></td>
             `;
@@ -3022,6 +4628,8 @@ async function checkAuth() {
         });
         tbody.innerHTML = '';
         tbody.appendChild(frag);
+        // Définir un contexte par défaut (1ère commande) si rien n'est sélectionné
+        try { if (!window.__currentOrderId && orders[0] && orders[0]._id) setCurrentOrderContext(orders[0]._id); } catch(_) {}
 
         // Mettre à jour barre d'actions groupées
         const updateBulkUI = () => {
@@ -3046,6 +4654,11 @@ async function checkAuth() {
                 if (e.target.checked) window.__ordersSelected.add(id);
                 else window.__ordersSelected.delete(id);
                 updateBulkUI();
+                // Mettre à jour le contexte courant avec sélection unique
+                try {
+                    const selected = Array.from(tbody.querySelectorAll('input.order-select:checked')).map(x => x.getAttribute('data-id')).filter(Boolean);
+                    setCurrentOrderContext(selected.length === 1 ? selected[0] : '');
+                } catch(_) {}
             });
         });
 
@@ -3086,6 +4699,43 @@ async function checkAuth() {
         }
 
         updateBulkUI();
+    }
+
+    // Délégation globale pour les actions sur les commandes (édition, suppression, etc.)
+    if (!window.__ordersActionDelegation) {
+        window.__ordersActionDelegation = true;
+        document.addEventListener('click', (ev) => {
+            // Bouton Modifier via data-action
+            const editBtn = ev.target.closest('button[data-action="edit"]');
+            if (editBtn && editBtn.dataset && editBtn.dataset.id) {
+                ev.preventDefault();
+                try { openEditOrderModal(editBtn.dataset.id); } catch(_) {}
+                return;
+            }
+            // Fallback: bouton avec id explicite 'od-edit'
+            const odEdit = ev.target.closest('#od-edit');
+            if (odEdit) {
+                ev.preventDefault();
+                let orderId = odEdit.dataset && odEdit.dataset.id ? odEdit.dataset.id : '';
+                if (!orderId) {
+                    const row = odEdit.closest('tr.order-row');
+                    if (row && row.dataset && row.dataset.id) orderId = row.dataset.id;
+                }
+                // Fallback: prendre la première ligne cochée si disponible
+                if (!orderId) {
+                    const checked = document.querySelector('input.order-select:checked');
+                    if (checked && checked.getAttribute('data-id')) {
+                        orderId = checked.getAttribute('data-id');
+                    }
+                }
+                if (orderId) {
+                    try { openEditOrderModal(orderId); } catch(_) {}
+                } else {
+                    try { showToast('Impossible d\'identifier la commande à modifier', 'error'); } catch(_) {}
+                }
+                return;
+            }
+        }, { passive: true });
     }
 
     function updateOrdersMetrics(metricData, orders) {
@@ -3135,19 +4785,371 @@ async function checkAuth() {
         if (awaitingPayEl) awaitingPayEl.textContent = String(awaitingPayment);
     }
 
-    function parseSort(val) {
-        switch (val) {
-            case 'date_desc': return ['date', 'desc'];
-            case 'date_asc': return ['date', 'asc'];
-            case 'amount_desc': return ['amount', 'desc'];
-            case 'amount_asc': return ['amount', 'asc'];
-            case 'number_desc': return ['number', 'desc'];
-            case 'number_asc': return ['number', 'asc'];
-            case 'status_asc': return ['status', 'asc'];
-            case 'status_desc': return ['status', 'desc'];
-            case 'type_asc': return ['type', 'asc'];
-            case 'type_desc': return ['type', 'desc'];
-            default: return ['date', 'desc'];
+    const ORDER_STATUS_DEFINITIONS = [
+        { value: 'pending_payment', label: 'En attente de paiement', style: 'background:#fef3c7;color:#92400e;border:1px solid #fcd34d;' },
+        { value: 'awaiting_transfer', label: 'En attente virement', style: 'background:#fef3c7;color:#92400e;border:1px solid #fcd34d;' },
+        { value: 'paid', label: 'Payée', style: 'background:#dcfce7;color:#166534;border:1px solid #86efac;' },
+        { value: 'processing', label: 'En traitement', style: 'background:#e0f2fe;color:#075985;border:1px solid #7dd3fc;' },
+        { value: 'fulfilled', label: 'Expédiée', style: 'background:#e9d5ff;color:#6b21a8;border:1px solid #d8b4fe;' },
+        { value: 'partially_fulfilled', label: 'Partiellement expédiée', style: 'background:#fef9c3;color:#854d0e;border:1px solid #fcd34d;' },
+        { value: 'cancelled', label: 'Annulée', style: 'background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;' },
+        { value: 'failed', label: 'Échec', style: 'background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;' },
+        { value: 'refunded', label: 'Remboursée', style: 'background:#f1f5f9;color:#334155;border:1px solid #cbd5e1;' },
+        { value: 'disputed', label: 'Litige', style: 'background:#fde68a;color:#92400e;border:1px solid #fcd34d;' }
+    ];
+
+    const ORDER_STATUS_LABELS = ORDER_STATUS_DEFINITIONS.reduce((acc, def) => {
+        acc[def.value] = def.label;
+        return acc;
+    }, {});
+
+    const ORDER_STATUS_STYLES = ORDER_STATUS_DEFINITIONS.reduce((acc, def) => {
+        acc[def.value] = def.style;
+        return acc;
+    }, {});
+
+    const DEFAULT_ORDER_STATUS_STYLE = 'background:#f1f5f9;color:#334155;border:1px solid #cbd5e1;';
+
+    let openOrderStatusWrapper = null;
+    let orderStatusMenuBound = false;
+    let shipModalState = null;
+
+    function getOrderStatusMeta(status) {
+        const raw = (status === null || status === undefined) ? '' : String(status);
+        const value = raw.trim().toLowerCase();
+        if (!value) {
+            return { value: '', label: '—', style: DEFAULT_ORDER_STATUS_STYLE };
+        }
+        const def = ORDER_STATUS_DEFINITIONS.find(item => item.value === value);
+        return {
+            value,
+            label: def ? def.label : raw,
+            style: def ? def.style : DEFAULT_ORDER_STATUS_STYLE
+        };
+    }
+
+    function escapeHtml(val) {
+        return (typeof window !== 'undefined' && typeof window.esc === 'function') ? window.esc(val) : String(val ?? '');
+    }
+
+    function escapeAttr(val) {
+        return (typeof window !== 'undefined' && typeof window.escAttr === 'function') ? window.escAttr(val) : String(val ?? '');
+    }
+
+    function renderOrderStatusCell(order) {
+        const meta = getOrderStatusMeta(order.status);
+        const orderIdSafe = escapeAttr(order._id || '');
+        const labelSafe = escapeHtml(meta.label);
+        const currentValue = meta.value;
+        const options = ORDER_STATUS_DEFINITIONS.slice();
+        if (currentValue && !options.some(opt => opt.value === currentValue)) {
+            options.push({ value: currentValue, label: meta.label, style: meta.style });
+        }
+        const itemsHtml = options.map(opt => {
+            const isCurrent = opt.value === currentValue;
+            const valueSafe = escapeAttr(opt.value);
+            const labelText = escapeHtml(opt.label);
+            const currentAttr = isCurrent ? ' aria-current="true"' : '';
+            const currentClass = isCurrent ? ' is-current' : '';
+            const checkIcon = isCurrent ? '<i class="fas fa-check order-status-menu__check" aria-hidden="true"></i>' : '';
+            return `<button type="button" class="order-status-menu__item${currentClass}" data-status-action="choose" data-status-value="${valueSafe}" data-order-id="${orderIdSafe}"${currentAttr}>${labelText}${checkIcon}</button>`;
+        }).join('');
+        return `
+            <div class="order-status-wrapper" data-order-id="${orderIdSafe}" data-current-status="${currentValue || ''}">
+                <button type="button" class="order-status-chip" data-status-action="toggle" data-order-id="${orderIdSafe}" data-current-status="${currentValue || ''}" style="${meta.style}" aria-haspopup="true" aria-expanded="false">
+                    <span class="order-status-chip__label">${labelSafe}</span>
+                    <i class="fas fa-chevron-down order-status-chip__caret" aria-hidden="true"></i>
+                </button>
+                <div class="order-status-menu" role="menu" aria-hidden="true" hidden>
+                    <div class="order-status-menu__title">Changer de statut</div>
+                    ${itemsHtml}
+                </div>
+            </div>
+        `;
+    }
+
+    function closeOrderStatusMenu() {
+        if (!openOrderStatusWrapper) return;
+        openOrderStatusWrapper.classList.remove('is-open');
+        openOrderStatusWrapper.classList.remove('is-loading');
+        const menu = openOrderStatusWrapper.querySelector('.order-status-menu');
+        if (menu) {
+            menu.setAttribute('aria-hidden', 'true');
+            menu.setAttribute('hidden', '');
+        }
+        const toggleBtn = openOrderStatusWrapper.querySelector('.order-status-chip');
+        if (toggleBtn) {
+            toggleBtn.setAttribute('aria-expanded', 'false');
+        }
+        openOrderStatusWrapper = null;
+    }
+
+    function openOrderStatusMenu(wrapper) {
+        if (!wrapper) return;
+        if (openOrderStatusWrapper && openOrderStatusWrapper !== wrapper) {
+            closeOrderStatusMenu();
+        }
+        openOrderStatusWrapper = wrapper;
+        wrapper.classList.add('is-open');
+        const menu = wrapper.querySelector('.order-status-menu');
+        if (menu) {
+            menu.removeAttribute('hidden');
+            menu.setAttribute('aria-hidden', 'false');
+        }
+        const toggleBtn = wrapper.querySelector('.order-status-chip');
+        if (toggleBtn) {
+            toggleBtn.setAttribute('aria-expanded', 'true');
+        }
+        if (menu) {
+            const firstItem = menu.querySelector('.order-status-menu__item');
+            if (firstItem) {
+                setTimeout(() => {
+                    try { firstItem.focus({ preventScroll: true }); } catch (_) {}
+                }, 10);
+            }
+        }
+    }
+
+    function toggleOrderStatusMenu(wrapper) {
+        if (!wrapper) return;
+        if (openOrderStatusWrapper === wrapper) {
+            closeOrderStatusMenu();
+        } else {
+            openOrderStatusMenu(wrapper);
+        }
+    }
+
+    function bindOrderStatusMenuGlobalHandlers() {
+        if (orderStatusMenuBound) return;
+        document.addEventListener('click', (event) => {
+            if (!openOrderStatusWrapper) return;
+            if (openOrderStatusWrapper.contains(event.target)) return;
+            closeOrderStatusMenu();
+        }, true);
+        document.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape') closeOrderStatusMenu();
+        });
+        window.addEventListener('scroll', () => {
+            if (openOrderStatusWrapper) closeOrderStatusMenu();
+        }, true);
+        orderStatusMenuBound = true;
+    }
+
+    async function ensureShipModalLoaded() {
+        if (shipModalState) return shipModalState;
+        try {
+            const res = await fetch('/admin/partials/order-ship-modal.html');
+            if (!res.ok) throw new Error('Chargement de la modale impossible');
+            const html = await res.text();
+            const wrapper = document.createElement('div');
+            wrapper.innerHTML = html.trim();
+            const modal = wrapper.firstElementChild;
+            if (!modal) throw new Error('Modale invalide');
+            document.body.appendChild(modal);
+
+            const state = {
+                modal,
+                form: modal.querySelector('#order-ship-form'),
+                orderIdInput: modal.querySelector('#order-ship-id'),
+                carrierSelect: modal.querySelector('#order-ship-carrier'),
+                trackingInput: modal.querySelector('#order-ship-tracking'),
+                dateInput: modal.querySelector('#order-ship-date'),
+                customWrapper: modal.querySelector('#order-ship-carrier-custom-wrapper'),
+                customInput: modal.querySelector('#order-ship-carrier-custom'),
+                submitBtn: modal.querySelector('#order-ship-submit'),
+                defaultSubmitHtml: modal.querySelector('#order-ship-submit')?.innerHTML || 'Confirmer'
+            };
+
+            const closeButtons = modal.querySelectorAll('[data-ship-close]');
+            closeButtons.forEach(btn => btn.addEventListener('click', closeShipModal));
+
+            if (state.form) {
+                state.form.addEventListener('submit', (event) => {
+                    event.preventDefault();
+                    submitShipForm();
+                });
+            }
+            if (state.submitBtn) {
+                state.submitBtn.addEventListener('click', submitShipForm);
+            }
+
+            if (state.carrierSelect) {
+                state.carrierSelect.addEventListener('change', () => {
+                    toggleCarrierCustomField(state, state.carrierSelect.value);
+                });
+            }
+
+            modal.addEventListener('keydown', (event) => {
+                if (event.key === 'Escape') {
+                    event.preventDefault();
+                    closeShipModal();
+                }
+            });
+
+            shipModalState = state;
+            return shipModalState;
+        } catch (error) {
+            console.error('[shipModal] chargement impossible', error);
+            showToast("Impossible d'ouvrir la modale d'expédition", 'error');
+            throw error;
+        }
+    }
+
+    function closeShipModal() {
+        if (!shipModalState || !shipModalState.modal) return;
+        shipModalState.modal.setAttribute('hidden', '');
+        shipModalState.modal.classList.remove('modal--open');
+        document.body.classList.remove('modal-open');
+        try {
+            if (shipModalState.form) shipModalState.form.reset();
+            if (shipModalState.submitBtn) {
+                shipModalState.submitBtn.disabled = false;
+                shipModalState.submitBtn.innerHTML = shipModalState.defaultSubmitHtml;
+            }
+        } catch (_) {}
+    }
+
+    function toggleCarrierCustomField(state, value) {
+        if (!state || !state.customWrapper) return;
+        const useCustom = (value || '').toLowerCase() === 'autre';
+        state.customWrapper.classList.toggle('form-group--hidden', !useCustom);
+        if (!useCustom && state.customInput) {
+            state.customInput.value = '';
+        }
+    }
+
+    function setCarrierField(state, carrierRaw) {
+        if (!state || !state.carrierSelect) return;
+        const select = state.carrierSelect;
+        const normalized = (carrierRaw || '').trim();
+        let matchedValue = '';
+        if (normalized) {
+            const options = Array.from(select.options || []);
+            const direct = options.find(opt => opt.value && opt.value.toLowerCase() === normalized.toLowerCase());
+            const byLabel = options.find(opt => opt.textContent && opt.textContent.trim().toLowerCase() === normalized.toLowerCase());
+            if (direct) matchedValue = direct.value;
+            else if (byLabel) matchedValue = byLabel.value;
+            else matchedValue = 'autre';
+        }
+        select.value = matchedValue;
+        toggleCarrierCustomField(state, matchedValue);
+        if (matchedValue === 'autre' && state.customInput) {
+            state.customInput.value = normalized;
+        }
+    }
+
+    function setDefaultShipDate(input, provided) {
+        if (!input) return;
+        const todayIso = new Date().toISOString().slice(0, 10);
+        if (provided) {
+            const trimmed = provided.trim();
+            if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+                input.value = trimmed;
+                return;
+            }
+            const parsed = new Date(trimmed);
+            if (!Number.isNaN(parsed.getTime())) {
+                input.value = parsed.toISOString().slice(0, 10);
+                return;
+            }
+        }
+        input.value = todayIso;
+    }
+
+    async function openShipModal(orderId, options = {}) {
+        try {
+            const state = await ensureShipModalLoaded();
+            if (!state) return;
+            if (state.orderIdInput) state.orderIdInput.value = orderId;
+            setCarrierField(state, options.carrier || '');
+            toggleCarrierCustomField(state, state.carrierSelect ? state.carrierSelect.value : '');
+            if (state.trackingInput) state.trackingInput.value = options.tracking || '';
+            setDefaultShipDate(state.dateInput, options.shippedDate || '');
+            state.modal.removeAttribute('hidden');
+            state.modal.classList.add('modal--open');
+            document.body.classList.add('modal-open');
+            const focusTarget = state.trackingInput || state.carrierSelect;
+            setTimeout(() => { try { focusTarget?.focus(); } catch (_) {} }, 40);
+        } catch (error) {
+            console.error('[shipModal] ouverture impossible', error);
+        }
+    }
+
+    function buildShipPayload(state) {
+        if (!state) return null;
+        const orderId = (state.orderIdInput?.value || '').trim();
+        if (!orderId) {
+            showToast('Commande inconnue', 'error');
+            return null;
+        }
+        const selectVal = (state.carrierSelect?.value || '').trim();
+        let carrier = selectVal;
+        if (selectVal === 'autre') {
+            carrier = (state.customInput?.value || '').trim();
+        }
+        const tracking = (state.trackingInput?.value || '').trim();
+        const shippedDate = (state.dateInput?.value || '').trim();
+
+        if (!carrier) {
+            showToast('Merci de renseigner un transporteur', 'error');
+            state.carrierSelect?.focus();
+            return null;
+        }
+        if (!tracking) {
+            showToast('Merci de renseigner un numéro de suivi', 'error');
+            state.trackingInput?.focus();
+            return null;
+        }
+        const payload = {
+            carrier,
+            trackingNumber: tracking
+        };
+        if (shippedDate) {
+            payload.shippedAt = `${shippedDate}T00:00:00.000Z`;
+        }
+        return { orderId, payload };
+    }
+
+    async function submitShipForm() {
+        const state = shipModalState;
+        if (!state) return;
+        const token = window.authToken || authToken;
+        if (!token) {
+            showToast('Session expirée, reconnectez-vous', 'error');
+            logout();
+            return;
+        }
+        const built = buildShipPayload(state);
+        if (!built) return;
+        try {
+            if (state.submitBtn) {
+                state.submitBtn.disabled = true;
+                state.submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Traitement…';
+            }
+            const res = await fetch(`/api/admin/orders/${encodeURIComponent(built.orderId)}/ship`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Basic ${token}`
+                },
+                body: JSON.stringify(built.payload)
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok || !data.success) {
+                const message = data.message || `Erreur ${res.status}`;
+                throw new Error(message);
+            }
+            showToast('Commande marquée comme expédiée', 'success');
+            closeShipModal();
+            await loadOrdersList(window.__ordersCurrentPage || 1);
+        } catch (error) {
+            console.error('[shipModal] submit', error);
+            showToast(error.message || 'Erreur lors de l\'expédition', 'error');
+        } finally {
+            if (state.submitBtn) {
+                state.submitBtn.disabled = false;
+                state.submitBtn.innerHTML = state.defaultSubmitHtml;
+            }
         }
     }
 
@@ -3177,6 +5179,7 @@ async function checkAuth() {
     async function updateTechnicalRef(orderId, fields) {
         if (!authToken) return logout();
         try {
+            const currentPage = window.__ordersCurrentPage || 1;
             const payload = { meta: {} };
             const engineVal = typeof fields.engineDisplacement === 'string' ? fields.engineDisplacement : undefined;
             const tcuVal = typeof fields.tcuReference === 'string' ? fields.tcuReference : undefined;
@@ -3197,9 +5200,37 @@ async function checkAuth() {
             const d = await r.json().catch(() => ({}));
             if (!r.ok || !d.success) throw new Error(d.message || 'Échec mise à jour référence technique');
             showToast('Référence technique mise à jour', 'success');
-            await loadOrdersList(1);
+            await loadOrdersList(currentPage);
         } catch (e) {
             showToast(e.message || 'Erreur', 'error');
+        }
+    }
+
+    async function updateOrderStatus(orderId, nextStatus) {
+        if (!authToken) return logout();
+        const normalized = (nextStatus === null || nextStatus === undefined) ? '' : String(nextStatus).trim().toLowerCase();
+        if (!normalized) {
+            showToast('Statut invalide', 'error');
+            throw new Error('Statut invalide');
+        }
+        try {
+            const response = await fetch(`/api/admin/orders/${encodeURIComponent(orderId)}`, {
+                method: 'PUT',
+                headers: { 'Authorization': `Basic ${authToken}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ status: normalized })
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok || !data.success) {
+                if (response.status === 403) throw new Error('Accès refusé: mise à jour du statut non autorisée');
+                throw new Error(data.message || 'Échec de la mise à jour du statut');
+            }
+            const label = ORDER_STATUS_LABELS[normalized] || nextStatus;
+            showToast(`Statut mis à jour: ${label}`, 'success');
+            await loadOrdersList(window.__ordersCurrentPage || 1);
+            return true;
+        } catch (error) {
+            showToast(error.message || 'Erreur lors de la mise à jour du statut', 'error');
+            throw error;
         }
     }
 
@@ -3239,40 +5270,9 @@ async function checkAuth() {
     }
 
     function renderStatusBadge(status) {
-        const s = String(status || '').toLowerCase();
-        const styles = {
-            'pending_payment': 'background:#fef3c7;color:#92400e;border:1px solid #fcd34d;',
-            'awaiting_transfer': 'background:#fef3c7;color:#92400e;border:1px solid #fcd34d;',
-            'pending': 'background:#fef3c7;color:#92400e;border:1px solid #fcd34d;',
-            'on-hold': 'background:#fef3c7;color:#92400e;border:1px solid #fcd34d;',
-            'paid': 'background:#dcfce7;color:#166534;border:1px solid #86efac;',
-            'processing': 'background:#e0f2fe;color:#075985;border:1px solid #7dd3fc;',
-            'completed': 'background:#e9d5ff;color:#6b21a8;border:1px solid #d8b4fe;',
-            'fulfilled': 'background:#e9d5ff;color:#6b21a8;border:1px solid #d8b4fe;',
-            'cancelled': 'background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;',
-            'failed': 'background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;',
-            'refunded': 'background:#f1f5f9;color:#334155;border:1px solid #cbd5e1;',
-            'disputed': 'background:#fde68a;color:#92400e;border:1px solid #fcd34d;',
-            'draft': 'background:#f1f5f9;color:#334155;border:1px solid #cbd5e1;'
-        };
-        const labelMap = {
-            'pending_payment': 'En attente de paiement',
-            'awaiting_transfer': 'En attente virement',
-            'pending': 'En attente',
-            'on-hold': 'En attente',
-            'paid': 'Payée',
-            'processing': 'En traitement',
-            'completed': 'Terminée',
-            'fulfilled': 'Expédiée',
-            'cancelled': 'Annulée',
-            'failed': 'Échec',
-            'refunded': 'Remboursée',
-            'disputed': 'Litige',
-            'draft': 'Brouillon'
-        };
-        const style = styles[s] || 'background:#f1f5f9;color:#334155;border:1px solid #cbd5e1;';
-        const label = labelMap[s] || (status || '—').toString();
-        return `<span style="display:inline-block;padding:2px 6px;border-radius:12px;font-size:12px;${style}">${label}</span>`;
+        const meta = getOrderStatusMeta(status);
+        const labelSafe = escapeHtml(meta.label);
+        return `<span class="status-badge" style="${meta.style}">${labelSafe}</span>`;
     }
 
     function openOrderDetails(id) {
@@ -4302,6 +6302,11 @@ async function checkAuth() {
         if (hash === '#orders') {
             if (!authToken) return;
             showOrders();
+            return;
+        }
+        if (hash === '#tasks') {
+            if (!authToken) return;
+            showTasks();
             return;
         }
         if (!authToken) return;

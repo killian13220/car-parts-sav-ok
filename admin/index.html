@@ -22,6 +22,7 @@
                     <ul>
                         <li class="active"><a href="#tickets"><i class="fas fa-ticket-alt"></i> Tickets</a></li>
                         <li><a href="#orders"><i class="fas fa-shopping-cart"></i> Commandes</a></li>
+                        <li><a href="#tasks"><i class="fas fa-tasks"></i> Tâches</a></li>
                         <li><a href="#docs"><i class="fas fa-book"></i> Documentation</a></li>
                         <li><a href="#settings"><i class="fas fa-cog"></i> Paramètres</a></li>
                     </ul>
@@ -85,29 +86,32 @@
                         <div class="filters-sidebar" id="filters-sidebar">
                             <div class="filters-sidebar-header">
                                 <h3><i class="fas fa-filter"></i> Filtres</h3>
-                                <button id="toggle-filters-sidebar" class="toggle-filters-btn" title="Masquer/Afficher les filtres">
+                                <button id="toggle-filters-sidebar" class="toggle-filters-btn" title="Réduire les filtres" aria-expanded="true" aria-controls="filters-sidebar">
                                     <i class="fas fa-chevron-left"></i>
                                 </button>
                             </div>
-                            
+
                             <div class="filters-sidebar-content">
-                                <!-- Recherche globale -->
-                                <div class="search-container">
-                                    <input type="text" id="search-input" placeholder="Recherche globale...">
-                                    <button id="search-btn" aria-label="Rechercher"><i class="fas fa-search"></i></button>
+                                <div class="filter-section">
+                                    <h4 class="filter-section-title"><i class="fas fa-search"></i> Recherche rapide</h4>
+                                    <div class="filter-section-body">
+                                        <div class="search-container">
+                                            <input type="text" id="search-input" placeholder="Recherche globale...">
+                                            <button id="search-btn" aria-label="Rechercher"><i class="fas fa-search"></i></button>
+                                        </div>
+                                    </div>
                                 </div>
-                                
-                                <!-- Contenu des filtres -->
+
                                 <div class="filter-container">
                                     <h3 id="toggle-filters"><i class="fas fa-filter"></i> Options de filtrage <span class="toggle-icon"><i class="fas fa-chevron-down"></i></span></h3>
                                     <div id="filters-content" class="filters-content">
-                                    <!-- Onglets des filtres -->
-                                    <div class="filter-tabs">
-                                        <button class="filter-tab-btn active" data-tab="basic">Filtres de base</button>
-                                        <button class="filter-tab-btn" data-tab="status">Statut & Type</button>
-                                        <button class="filter-tab-btn" data-tab="client">Client & Commande</button>
-                                        <button class="filter-tab-btn" data-tab="dates">Dates</button>
-                                    </div>
+                                        <!-- Onglets des filtres -->
+                                        <div class="filter-tabs">
+                                            <button class="filter-tab-btn active" data-tab="basic">Filtres de base</button>
+                                            <button class="filter-tab-btn" data-tab="status">Statut &amp; Type</button>
+                                            <button class="filter-tab-btn" data-tab="client">Client &amp; Commande</button>
+                                            <button class="filter-tab-btn" data-tab="dates">Dates</button>
+                                        </div>
                                     
                                     <!-- Contenu des onglets -->
                                     <div class="filter-tab-content active" id="tab-basic">
@@ -229,15 +233,15 @@
                                         </div>
                                     </div>
                                     
-                                    <!-- Boutons d'action -->
-                                    <div class="filter-actions">
-                                        <button id="apply-filters" class="btn-primary"><i class="fas fa-check"></i> Appliquer les filtres</button>
-                                        <button id="clear-filters" class="btn-secondary"><i class="fas fa-times"></i> Effacer les filtres</button>
-                                    </div>
                                 </div>
                             </div>
                         </div>
+                        <div class="filters-footer-actions" role="group" aria-label="Actions filtres">
+                            <button id="clear-filters" class="btn-secondary"><i class="fas fa-times"></i> Effacer</button>
+                            <button id="apply-filters" class="btn-primary"><i class="fas fa-check"></i> Appliquer</button>
+                        </div>
                     </div>
+                    <div class="filters-sidebar-overlay" id="filters-sidebar-overlay" hidden></div>
                     
                     <!-- Contenu principal (à droite) -->
                     <div class="dashboard-main-content">
@@ -489,6 +493,263 @@
                         </div>
                     </div>
                 </div>
+
+                <!-- Section Tâches / Todolist -->
+                <div class="admin-tasks" id="admin-tasks" style="display: none;">
+                    <div class="tasks-layout">
+                        <section class="tasks-main">
+                            <header class="tasks-hero">
+                                <div class="tasks-hero__content">
+                                    <div class="tasks-hero__icon"><i class="fas fa-tasks"></i></div>
+                                    <div class="tasks-hero__text">
+                                        <h2>Tâches & rappels SAV</h2>
+                                        <p>Planifie, assigne et clôture les actions de l'équipe sans rien oublier.</p>
+                                        <span id="tasks-last-refresh" class="tasks-hero__meta">Dernière mise à jour : —</span>
+                                    </div>
+                                </div>
+                                <div class="tasks-hero__cta">
+                                    <button id="tasks-create-btn" class="btn-primary">
+                                        <i class="fas fa-plus"></i> Nouvelle tâche
+                                    </button>
+                                    <button id="tasks-refresh-btn" class="btn-secondary" title="Actualiser">
+                                        <i class="fas fa-rotate"></i>
+                                    </button>
+                                </div>
+                            </header>
+
+                            <div class="tasks-tabs" role="tablist">
+                                <button class="tasks-tab-button is-active" id="tasks-tab-btn-tasks" data-tab="tasks" role="tab" aria-controls="tasks-tab-panel-tasks" aria-selected="true">
+                                    <i class="fas fa-check-double"></i> Tâches
+                                </button>
+                                <button class="tasks-tab-button" id="tasks-tab-btn-shipments" data-tab="shipments" role="tab" aria-controls="tasks-tab-panel-shipments" aria-selected="false">
+                                    <i class="fas fa-truck"></i> Expéditions
+                                </button>
+                            </div>
+
+                            <div class="tasks-tab-panel tasks-tab-panel--tasks is-active" id="tasks-tab-panel-tasks" role="tabpanel" aria-labelledby="tasks-tab-btn-tasks">
+                                <div class="tasks-insights" id="tasks-insights">
+                                    <article class="tasks-insight-card">
+                                        <div class="tasks-insight-card__icon todo"><i class="fas fa-list-ul"></i></div>
+                                        <div>
+                                            <h3>Tâches ouvertes</h3>
+                                            <p id="tasks-open-count">0</p>
+                                            <small>À planifier ou à démarrer</small>
+                                        </div>
+                                    </article>
+                                    <article class="tasks-insight-card">
+                                        <div class="tasks-insight-card__icon progress"><i class="fas fa-spinner"></i></div>
+                                        <div>
+                                            <h3>En cours</h3>
+                                            <p id="tasks-progress-count">0</p>
+                                            <small>Suivies par les agents</small>
+                                        </div>
+                                    </article>
+                                    <article class="tasks-insight-card">
+                                        <div class="tasks-insight-card__icon urgent"><i class="fas fa-bolt"></i></div>
+                                        <div>
+                                            <h3>Urgences</h3>
+                                            <p id="tasks-urgent-count">0</p>
+                                            <small>Priorité haute / urgent</small>
+                                        </div>
+                                    </article>
+                                    <article class="tasks-insight-card">
+                                        <div class="tasks-insight-card__icon done"><i class="fas fa-check-circle"></i></div>
+                                        <div>
+                                            <h3>Terminées (30j)</h3>
+                                            <p id="tasks-done-count">0</p>
+                                            <small>Historique récent</small>
+                                        </div>
+                                    </article>
+                                </div>
+
+                                <div class="tasks-toolbar">
+                                    <div class="tasks-search">
+                                        <i class="fas fa-search"></i>
+                                        <input type="text" id="tasks-search-input" placeholder="Rechercher par titre, mot-clé ou agent…" autocomplete="off">
+                                    </div>
+                                    <div class="tasks-toolbar__filters">
+                                        <label class="tasks-filter">
+                                            <span>Statut</span>
+                                            <select id="tasks-status-filter">
+                                                <option value="">Tous</option>
+                                                <option value="todo">À faire</option>
+                                                <option value="in_progress">En cours</option>
+                                                <option value="done">Terminées</option>
+                                            </select>
+                                        </label>
+                                        <label class="tasks-filter">
+                                            <span>Priorité</span>
+                                            <select id="tasks-priority-filter">
+                                                <option value="">Toutes</option>
+                                                <option value="urgent">Urgent</option>
+                                                <option value="high">Haute</option>
+                                                <option value="medium">Moyenne</option>
+                                                <option value="low">Basse</option>
+                                            </select>
+                                        </label>
+                                        <label class="tasks-filter">
+                                            <span>Assignation</span>
+                                            <select id="tasks-assigned-filter">
+                                                <option value="">Tous les agents</option>
+                                                <option value="me">Mes tâches</option>
+                                                <option value="unassigned">Non assignées</option>
+                                            </select>
+                                        </label>
+                                        <button class="btn-secondary tasks-toolbar__clear" id="tasks-clear-filters" title="Réinitialiser les filtres">
+                                            <i class="fas fa-times"></i>
+                                        </button>
+                                    </div>
+
+                                    <div class="tasks-quick-filters" id="tasks-quickbar" role="group" aria-label="Filtres rapides tâches">
+                                    <button class="tasks-chip active" id="qf-my-urgent" title="Mes urgences" aria-pressed="false" data-filter="urgent"><i class="fas fa-bolt"></i> Mes urgences</button>
+                                    <button class="tasks-chip" id="qf-today" title="À faire aujourd’hui" aria-pressed="false" data-filter="today"><i class="fas fa-sun"></i> Aujourd’hui</button>
+                                    <button class="tasks-chip" id="qf-overdue" title="En retard" aria-pressed="false" data-filter="overdue"><i class="fas fa-clock"></i> En retard</button>
+                                    <button class="tasks-chip" id="qf-unassigned" title="Non assignées" aria-pressed="false" data-filter="unassigned"><i class="fas fa-user-slash"></i> Non assignées</button>
+                                </div>
+                                </div>
+
+                                <div class="tasks-board">
+                                    <div class="tasks-board__table">
+                                        <table class="tasks-table" id="tasks-table">
+                                            <thead>
+                                                <tr>
+                                                    <th style="width:42px;"></th>
+                                                    <th>Tâche</th>
+                                                    <th>Priorité</th>
+                                                    <th>Assigné à</th>
+                                                    <th>Statut</th>
+                                                    <th>Échéance</th>
+                                                    <th>Créée par</th>
+                                                    <th style="width:82px;">Actions</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody id="tasks-list">
+                                                <tr><td colspan="8" class="tasks-empty-state">Chargement…</td></tr>
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                    <div class="tasks-pagination" id="tasks-pagination"></div>
+                                </div>
+                            </div>
+
+                            <div class="tasks-tab-panel tasks-tab-panel--shipments" id="tasks-tab-panel-shipments" role="tabpanel" aria-labelledby="tasks-tab-btn-shipments" hidden>
+                                <div class="shipments-summary" id="shipments-summary">
+                                    <article class="shipments-card">
+                                        <div class="shipments-card__icon total"><i class="fas fa-truck-loading"></i></div>
+                                        <div>
+                                            <h3>À préparer</h3>
+                                            <p id="shipments-total-count">0</p>
+                                            <small>Commandes en attente d’expédition</small>
+                                        </div>
+                                    </article>
+                                    <article class="shipments-card">
+                                        <div class="shipments-card__icon today"><i class="fas fa-calendar-day"></i></div>
+                                        <div>
+                                            <h3>Pour aujourd’hui</h3>
+                                            <p id="shipments-due-today">0</p>
+                                            <small>Livraison estimée aujourd’hui</small>
+                                        </div>
+                                    </article>
+                                    <article class="shipments-card">
+                                        <div class="shipments-card__icon overdue"><i class="fas fa-exclamation-triangle"></i></div>
+                                        <div>
+                                            <h3>En retard</h3>
+                                            <p id="shipments-overdue">0</p>
+                                            <small>À traiter en priorité</small>
+                                        </div>
+                                    </article>
+                                    <article class="shipments-card">
+                                        <div class="shipments-card__icon planning"><i class="fas fa-question-circle"></i></div>
+                                        <div>
+                                            <h3>Sans date</h3>
+                                            <p id="shipments-no-date">0</p>
+                                            <small>Planifier une estimation</small>
+                                        </div>
+                                    </article>
+                                </div>
+
+                                <div class="shipments-toolbar">
+                                    <div class="shipments-toolbar__info">
+                                        <i class="fas fa-info-circle"></i>
+                                        <div>
+                                            <span id="shipments-filter-label">Toutes les commandes à expédier</span>
+                                            <small id="shipments-last-refresh">Dernière mise à jour : —</small>
+                                        </div>
+                                    </div>
+                                    <div class="shipments-toolbar__actions">
+                                        <button id="shipments-refresh-btn" class="btn-secondary"><i class="fas fa-rotate"></i> Actualiser</button>
+                                    </div>
+                                </div>
+
+                                <div class="shipments-quick-filters" id="shipments-quick-filters" role="group" aria-label="Filtres expédition">
+                                    <button class="shipments-chip is-active" data-filter="all"><i class="fas fa-layer-group"></i> Toutes</button>
+                                    <button class="shipments-chip" data-filter="today"><i class="fas fa-calendar-day"></i> Aujourd’hui</button>
+                                    <button class="shipments-chip" data-filter="overdue"><i class="fas fa-exclamation-triangle"></i> En retard</button>
+                                    <button class="shipments-chip" data-filter="noTracking"><i class="fas fa-barcode"></i> Sans suivi</button>
+                                    <button class="shipments-chip" data-filter="noDate"><i class="fas fa-question-circle"></i> Sans date</button>
+                                </div>
+
+                                <div class="shipments-board">
+                                    <table class="shipments-table" id="shipments-table">
+                                        <thead>
+                                            <tr>
+                                                <th>Commande</th>
+                                                <th>Client</th>
+                                                <th>Statut</th>
+                                                <th>Livraison estimée</th>
+                                                <th>Suivi</th>
+                                                <th>Montant</th>
+                                                <th style="width:120px;">Actions</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="shipments-list">
+                                            <tr><td colspan="7" class="shipments-empty-state"><i class="fas fa-spinner fa-spin"></i> Chargement…</td></tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </section>
+
+                        <aside class="tasks-sidepanel" id="tasks-sidepanel">
+                            <div class="tasks-sidepanel__empty" id="tasks-sidepanel-empty">
+                                <i class="fas fa-clipboard-check"></i>
+                                <h3>Sélectionne une tâche</h3>
+                                <p>Retrouve ici les détails, la timeline et les rappels liés.</p>
+                                <button class="btn-primary" id="tasks-sidepanel-create">Créer une tâche</button>
+                            </div>
+                            <div class="tasks-sidepanel__content" id="tasks-sidepanel-content" hidden>
+                                <header class="tasks-sidepanel__header">
+                                    <div>
+                                        <span class="tasks-sidepanel__status" id="tasks-sidepanel-status"></span>
+                                        <h3 id="tasks-sidepanel-title">Titre tâche</h3>
+                                        <p id="tasks-sidepanel-meta"></p>
+                                    </div>
+                                    <button class="btn-secondary" id="tasks-sidepanel-edit"><i class="fas fa-pen"></i></button>
+                                </header>
+                                <section class="tasks-sidepanel__section">
+                                    <h4><i class="fas fa-align-left"></i>Description</h4>
+                                    <p id="tasks-sidepanel-description" class="tasks-sidepanel__muted">Aucune description.</p>
+                                </section>
+                                <section class="tasks-sidepanel__section">
+                                    <h4><i class="fas fa-info-circle"></i>Informations</h4>
+                                    <ul class="tasks-sidepanel__facts">
+                                        <li><span>Priorité</span><strong id="tasks-sidepanel-priority">-</strong></li>
+                                        <li><span>Assigné à</span><strong id="tasks-sidepanel-assigned">-</strong></li>
+                                        <li><span>Créé par</span><strong id="tasks-sidepanel-created-by">-</strong></li>
+                                        <li><span>Créée le</span><strong id="tasks-sidepanel-created-at">-</strong></li>
+                                        <li><span>Échéance</span><strong id="tasks-sidepanel-due">-</strong></li>
+                                    </ul>
+                                </section>
+                                <section class="tasks-sidepanel__section">
+                                    <h4><i class="fas fa-history"></i>Historique</h4>
+                                    <div class="tasks-timeline" id="tasks-sidepanel-timeline">
+                                        <span class="tasks-sidepanel__muted">Aucun événement enregistré.</span>
+                                    </div>
+                                </section>
+                            </div>
+                        </aside>
+                    </div>
+                </div>
                 
                 <!-- Section Paramètres - Gestion des utilisateurs SAV -->
                 <div class="admin-settings" id="admin-settings">
@@ -578,6 +839,69 @@
                         </div>
 
                 
+
+                        <!-- Modèles de tâches -->
+                        <h2><i class="fas fa-tasks"></i> Modèles de tâches</h2>
+                        <div class="settings-actions">
+                            <button id="tasktpl-refresh-btn" class="btn-secondary"><i class="fas fa-rotate"></i> Rafraîchir</button>
+                            <span id="tasktpl-feedback" class="help-text"></span>
+                        </div>
+                        <div class="templates-list-card">
+                            <div class="od-grid od-grid--2">
+                                <div class="od-card">
+                                    <h3><i class="fas fa-plus"></i> Nouveau modèle</h3>
+                                    <div class="od-grid od-grid--2">
+                                        <div class="od-field">
+                                            <label class="od-label" for="tasktpl-name">Nom du modèle</label>
+                                            <input id="tasktpl-name" type="text" placeholder="Ex: Relance client livraison" />
+                                        </div>
+                                        <div class="od-field">
+                                            <label class="od-label" for="tasktpl-priority">Priorité</label>
+                                            <select id="tasktpl-priority">
+                                                <option value="low">Basse</option>
+                                                <option value="medium" selected>Moyenne</option>
+                                                <option value="high">Haute</option>
+                                                <option value="urgent">Urgent</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <div class="od-field">
+                                        <label class="od-label" for="tasktpl-title">Titre par défaut</label>
+                                        <input id="tasktpl-title" type="text" placeholder="Ex: Relancer le client pour la livraison" />
+                                    </div>
+                                    <div class="od-field">
+                                        <label class="od-label" for="tasktpl-tags">Tags (séparés par des virgules)</label>
+                                        <input id="tasktpl-tags" type="text" placeholder="ex: rappel, client, livraison" />
+                                    </div>
+                                    <div class="od-field">
+                                        <label class="od-label" for="tasktpl-description">Description</label>
+                                        <textarea id="tasktpl-description" rows="3" placeholder="Détaille les étapes ou le contexte…"></textarea>
+                                    </div>
+                                    <div class="od-actions">
+                                        <button id="tasktpl-save-btn" class="btn-primary"><i class="fas fa-save"></i> Enregistrer le modèle</button>
+                                    </div>
+                                </div>
+                                <div class="od-card">
+                                    <h3><i class="fas fa-list-ul"></i> Modèles existants</h3>
+                                    <div class="templates-list-card">
+                                        <table class="tickets-table">
+                                            <thead>
+                                                <tr>
+                                                    <th>Nom</th>
+                                                    <th>Titre</th>
+                                                    <th>Priorité</th>
+                                                    <th>Tags</th>
+                                                    <th>Actions</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody id="tasktpl-list">
+                                                <tr><td colspan="5" class="od-empty"><i class="fas fa-info-circle"></i> Aucun modèle</td></tr>
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
 
                         <!-- Gestion des modèles de réponse -->
                         <h2><i class="fas fa-reply"></i> Modèles de réponse</h2>
@@ -745,26 +1069,37 @@
                     </div>
                     
                     <div class="ticket-header">
-                        <div class="ticket-header-actions">
-                            <button class="btn-back" id="back-to-list"><i class="fas fa-arrow-left"></i> Retour</button>
-                            <button class="btn-delete" id="delete-ticket-detail"><i class="fas fa-trash"></i> Supprimer</button>
-                        <h2>Détails du ticket <span id="detail-ticket-number"></span></h2>
-                        <div class="ticket-status-priority">
-                            <span id="detail-ticket-priority" class="priority-badge"></span>
-                            <span id="detail-ticket-status" class="ticket-current-status" style="display:none"></span>
-                            <span id="detail-ticket-current-priority" style="display:none"></span>
+                        <div class="ticket-hero">
+                            <div class="ticket-hero__top">
+                                <div class="ticket-hero__nav">
+                                    <button class="btn-back" id="back-to-list"><i class="fas fa-arrow-left"></i> Retour</button>
+                                    <button class="btn-delete" id="delete-ticket-detail"><i class="fas fa-trash"></i> Supprimer</button>
+                                </div>
+                                <h2 class="ticket-hero__title">Détails du ticket <span id="detail-ticket-number"></span></h2>
+                            </div>
+                            <div class="ticket-hero__meta">
+                                <div class="ticket-hero__left">
+                                    <div class="ticket-assign-info">
+                                        <span><strong>Assigné à:</strong> <span id="detail-assigned-to">—</span></span>
+                                        <span id="detail-escalation-badge" class="priority-badge" style="display:none; background:#f59e0b; color:#111827;">Escaladé</span>
+                                    </div>
+                                </div>
+                                <div class="ticket-hero__right">
+                                    <div class="ticket-status-priority">
+                                        <span id="detail-ticket-priority" class="priority-badge"></span>
+                                        <span id="detail-ticket-status" class="ticket-current-status" style="display:none"></span>
+                                        <span id="detail-ticket-current-priority" style="display:none"></span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="ticket-hero__actions">
+                                <div class="ticket-actions" id="ticket-actions">
+                                    <button id="btn-assign-ticket" class="btn-secondary" title="Assigner ce ticket"><i class="fas fa-user-check"></i> Assigner</button>
+                                    <button id="btn-request-assistance" class="btn-secondary" title="Demander de l'assistance interne"><i class="fas fa-life-ring"></i> Demander assistance</button>
+                                    <button id="btn-escalate-ticket" class="btn-danger" title="Escalader ce ticket (administrateur uniquement)"><i class="fas fa-exclamation-triangle"></i> Escalader</button>
+                                </div>
+                            </div>
                         </div>
-                        <div class="ticket-assign-info" style="margin-top:8px; display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
-                            <span><strong>Assigné à:</strong> <span id="detail-assigned-to">—</span></span>
-                            <span id="detail-escalation-badge" class="priority-badge" style="display:none; background:#f59e0b; color:#111827;">Escaladé</span>
-                        </div>
-                        <div class="ticket-actions" id="ticket-actions" style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap;">
-                            <button id="btn-assign-ticket" class="btn-secondary" title="Assigner ce ticket"><i class="fas fa-user-check"></i> Assigner</button>
-                            <button id="btn-request-assistance" class="btn-secondary" title="Demander de l'assistance interne"><i class="fas fa-life-ring"></i> Demander assistance</button>
-                            <button id="btn-escalate-ticket" class="btn-danger" title="Escalader ce ticket (administrateur uniquement)"><i class="fas fa-exclamation-triangle"></i> Escalader</button>
-                        </div>
-                        </div>
-                        
                         <!-- Bloc Informations & Notes (plein largeur au-dessus) -->
                     <div class="tabs-container">
                                 <div class="tabs-nav">
@@ -904,69 +1239,113 @@
                         </div>
                         <div class="status-panel panel panel--status">
                             <div class="panel-header"><i class="fas fa-clipboard-check"></i><h3>Mettre à jour le statut (actions)</h3></div>
-                            <form id="update-status-form">
-                                <div class="form-group">
-                                    <label for="new-status">Nouveau statut <i class="fas fa-info-circle help-icon" title="Modifie l'état actuel du ticket et déclenche des notifications"></i></label>
-                                    <span class="current-value-indicator">Statut actuel: <span id="visible-current-status"></span></span>
-                                    <small class="help-text">Ce statut sera visible par le client et indique l'étape actuelle du processus SAV</small>
-                                    <select id="new-status" required>
-                                        <option value="same_status">Conserver le même statut</option>
-                                        <option value="">Sélectionner un statut</option>
-                                        <option value="nouveau">Nouveau</option>
-                                        <option value="en_analyse">En analyse</option>
-                                        <option value="info_complementaire">Informations complémentaires requises</option>
-                                        <option value="validé">Validé</option>
-                                        <option value="refusé">Refusé</option>
-                                        <option value="en_cours_traitement">En cours de traitement</option>
-                                        <option value="expédié">Expédié</option>
-                                        <option value="clôturé">Clôturé</option>
-                                    </select>
+                            <form id="update-status-form" class="status-update-form">
+                                <div class="status-form-summary">
+                                    <div class="status-summary-item">
+                                        <span class="status-summary-label">Statut actuel</span>
+                                        <span class="status-summary-value" id="visible-current-status"></span>
+                                    </div>
+                                    <div class="status-summary-item">
+                                        <span class="status-summary-label">Priorité actuelle</span>
+                                        <span class="status-summary-value" id="visible-current-priority"></span>
+                                    </div>
+                                    <div class="status-summary-item status-summary-item--muted">
+                                        <span class="status-summary-label">Dernière mise à jour</span>
+                                        <span class="status-summary-value" id="status-last-update">—</span>
+                                    </div>
                                 </div>
-                                <div class="form-group">
-                                    <label for="ticket-priority">Priorité <i class="fas fa-info-circle help-icon" title="Détermine l'urgence du traitement du ticket"></i></label>
-                                    <span class="current-value-indicator">Priorité actuelle: <span id="visible-current-priority"></span></span>
-                                    <small class="help-text">Aide à organiser le traitement des demandes par ordre d'importance (non visible par le client)</small>
-                                    <select id="ticket-priority">
-                                        <option value="">Conserver la priorité actuelle</option>
-                                        <option value="faible">Faible</option>
-                                        <option value="moyen">Moyenne</option>
-                                        <option value="élevé">Élevée</option>
-                                        <option value="urgent">Urgente</option>
-                                    </select>
+                                <div class="status-form-grid">
+                                    <div class="status-form-card">
+                                        <div class="status-form-card__header">
+                                            <i class="fas fa-arrow-trend-up"></i>
+                                            <div>
+                                                <h4>Statut du ticket</h4>
+                                                <p>Choisissez la prochaine étape visible par le client.</p>
+                                            </div>
+                                        </div>
+                                        <div class="form-group">
+                                            <label for="new-status">Nouveau statut <i class="fas fa-info-circle help-icon" title="Modifie l'état actuel du ticket et déclenche des notifications"></i></label>
+                                            <small class="help-text">Sélectionnez <strong>“Conserver le même statut”</strong> si aucun changement n'est nécessaire.</small>
+                                            <select id="new-status" required>
+                                                <option value="same_status">Conserver le même statut</option>
+                                                <option value="">Sélectionner un statut</option>
+                                                <option value="nouveau">Nouveau</option>
+                                                <option value="en_analyse">En analyse</option>
+                                                <option value="info_complementaire">Informations complémentaires requises</option>
+                                                <option value="validé">Validé</option>
+                                                <option value="refusé">Refusé</option>
+                                                <option value="en_cours_traitement">En cours de traitement</option>
+                                                <option value="expédié">Expédié</option>
+                                                <option value="clôturé">Clôturé</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <div class="status-form-card">
+                                        <div class="status-form-card__header">
+                                            <i class="fas fa-layer-group"></i>
+                                            <div>
+                                                <h4>Priorité & modèle</h4>
+                                                <p>Ajustez l'urgence et préparez votre réponse.</p>
+                                            </div>
+                                        </div>
+                                        <div class="form-group">
+                                            <label for="ticket-priority">Priorité <i class="fas fa-info-circle help-icon" title="Détermine l'urgence du traitement du ticket"></i></label>
+                                            <select id="ticket-priority">
+                                                <option value="">Conserver la priorité actuelle</option>
+                                                <option value="faible">Faible</option>
+                                                <option value="moyen">Moyenne</option>
+                                                <option value="élevé">Élevée</option>
+                                                <option value="urgent">Urgente</option>
+                                            </select>
+                                        </div>
+                                        <div class="form-group">
+                                            <label for="response-template">Modèle de réponse <i class="fas fa-info-circle help-icon" title="Insère un modèle avec des variables comme le nom du client"></i></label>
+                                            <small class="help-text">Choisissez un modèle pour accélérer votre rédaction. Le texte peut être ajusté ensuite.</small>
+                                            <select id="response-template">
+                                                <option value="">Aucun modèle</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <div class="status-form-card status-form-card--wide">
+                                        <div class="status-form-card__header">
+                                            <i class="fas fa-pen-to-square"></i>
+                                            <div>
+                                                <h4>Communication client</h4>
+                                                <p>Expliquez clairement le changement et joignez des preuves si nécessaire.</p>
+                                            </div>
+                                        </div>
+                                        <div class="form-group">
+                                            <label for="status-comment">Commentaire <i class="fas fa-info-circle help-icon" title="Visible par le client dans le suivi du ticket"></i></label>
+                                            <textarea id="status-comment" rows="4" placeholder="Ex: Nous procédons au remboursement sous 48h..."></textarea>
+                                        </div>
+                                        <div class="status-form-attachments">
+                                            <div class="form-group">
+                                                <label for="comment-attachments">Pièces jointes</label>
+                                                <small class="help-text">Formats acceptés: JPG, PNG, PDF (5 fichiers max)</small>
+                                                <input type="file" id="comment-attachments" accept=".jpg,.jpeg,.png,.pdf" multiple>
+                                            </div>
+                                            <div id="comment-attachments-preview" class="attachments-preview" style="display:none;"></div>
+                                        </div>
+                                        <div class="form-group" id="additional-info-group" style="display: none;">
+                                            <label for="additional-info">Informations complémentaires demandées <i class="fas fa-info-circle help-icon" title="Précisez les documents ou informations nécessaires au client"></i></label>
+                                            <textarea id="additional-info" rows="3" placeholder="Merci de nous transmettre..."></textarea>
+                                        </div>
+                                        <div class="status-form-options">
+                                            <label class="checkbox-container" title="Envoie un email automatique au client pour l'informer du changement">
+                                                <input type="checkbox" id="notify-client" checked>
+                                                <span class="checkmark"></span>
+                                                Notifier le client par email
+                                            </label>
+                                            <small class="help-text">Un email est envoyé avec le nouveau statut et votre commentaire, si cette option reste cochée.</small>
+                                        </div>
+                                    </div>
                                 </div>
-                                <div class="form-group">
-                                    <label for="response-template">Modèle de réponse <i class="fas fa-info-circle help-icon" title="Insère un modèle avec des variables comme le nom du client"></i></label>
-                                    <small class="help-text">Choisissez un modèle pour accélérer votre réponse</small>
-                                    <select id="response-template">
-                                        <option value="">Aucun modèle</option>
-                                    </select>
-                                </div>
-                                <div class="form-group">
-                                    <label for="status-comment">Commentaire <i class="fas fa-info-circle help-icon" title="Visible par le client dans le suivi du ticket"></i></label>
-                                    <small class="help-text">Ce commentaire sera visible par le client et lui explique le changement de statut</small>
-                                    <textarea id="status-comment" rows="3"></textarea>
-                                </div>
-                                <div class="form-group">
-                                    <label for="comment-attachments">Pièces jointes</label>
-                                    <small class="help-text">Ajoutez des fichiers (JPG, PNG, PDF)</small>
-                                    <input type="file" id="comment-attachments" accept=".jpg,.jpeg,.png,.pdf" multiple>
-                                    <div id="comment-attachments-preview" class="attachments-preview" style="display:none; margin-top:8px;"></div>
-                                </div>
-                                <div class="form-group" id="additional-info-group" style="display: none;">
-                                    <label for="additional-info">Informations complémentaires demandées <i class="fas fa-info-circle help-icon" title="Précisez les documents ou informations nécessaires au client"></i></label>
-                                    <small class="help-text">Détaillez précisément les informations manquantes pour traiter le dossier</small>
-                                    <textarea id="additional-info" rows="3"></textarea>
-                                </div>
-                                <div class="form-group">
-                                    <label class="checkbox-container" title="Envoie un email automatique au client pour l'informer du changement">
-                                        <input type="checkbox" id="notify-client" checked>
-                                        <span class="checkmark"></span>
-                                        Notifier le client par email <i class="fas fa-info-circle help-icon" title="Un email automatique sera envoyé avec le nouveau statut et commentaire"></i>
-                                    </label>
-                                </div>
-                                <div class="form-actions">
-                                    <button type="submit" class="btn-primary" title="Enregistrer les modifications et mettre à jour le ticket">Mettre à jour</button>
-                                    <small class="help-text btn-help">Les modifications seront immédiatement enregistrées et le client sera notifié si l'option est sélectionnée</small>
+                                <div class="status-form-actions">
+                                    <button type="submit" class="btn-primary" title="Enregistrer les modifications et mettre à jour le ticket">Mettre à jour le ticket</button>
+                                    <div class="status-form-hints">
+                                        <i class="fas fa-shield-check"></i>
+                                        <p>Les modifications sont tracées dans l'historique et visibles pour l'équipe. Le client est informé si la notification est activée.</p>
+                                    </div>
                                 </div>
                             </form>
                         </div>
@@ -983,7 +1362,7 @@
     <script src="https://cdn.jsdelivr.net/npm/turndown@7.1.2/dist/turndown.js"></script>
     <div id="cpf-toast-container" class="cpf-toast-container"></div>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-    <script src="admin.js?v=20250922-2"></script>
+    <script src="admin.js?v=20250929-3"></script>
     <script src="kanban.js?v=20250809-1"></script>
 </body>
 </html>

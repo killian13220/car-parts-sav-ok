@@ -18,11 +18,14 @@ const ResponseTemplate = require('./models/responseTemplate');
 const Notification = require('./models/notification');
 const Documentation = require('./models/documentation');
 const Order = require('./models/order');
+const Task = require('./models/task');
+const TaskTemplate = require('./models/taskTemplate');
 const bcrypt = require('bcryptjs');
 // Assurer la disponibilité de fetch côté serveur (Node < 18)
 let fetch = global.fetch;
 if (!fetch) {
   try { fetch = require('undici').fetch; } catch (_) {}
+
 }
 
 const AUTO_TECHREF_START = new Date(Date.UTC(2025, 6, 1));
@@ -79,6 +82,105 @@ require('dotenv').config();
 const { isS3Enabled, uploadBuffer, streamToResponse } = require('./services/storage');
 
 module.exports.rebuildTechnicalRefsInternal = rebuildTechnicalRefsInternal;
+
+async function rebuildVinOrPlateInternal() {
+  let scanned = 0;
+  let updated = 0;
+  const cursor = Order.find({}, { provider: 1, providerOrderId: 1, meta: 1 }).cursor();
+  const wooBase = (process.env.WOOCOMMERCE_BASE_URL || '').trim();
+  const wooCk = (process.env.WOOCOMMERCE_CONSUMER_KEY || '').trim();
+  const wooCs = (process.env.WOOCOMMERCE_CONSUMER_SECRET || '').trim();
+  for (let doc = await cursor.next(); doc != null; doc = await cursor.next()) {
+    scanned++;
+    const hasMeta = !!doc.meta && typeof doc.meta === 'object';
+    const previous = hasMeta ? (doc.meta.vinOrPlate || '') : '';
+    const cleanPrev = typeof previous === 'string' ? previous.trim() : '';
+    let nextValue = '';
+
+    if (doc.provider === 'woocommerce' && doc.providerOrderId && wooBase && wooCk && wooCs) {
+      try {
+        const wooResp = await fetchWooOrderDetail(wooBase, wooCk, wooCs, doc.providerOrderId);
+        if (wooResp) {
+          const metaCandidate = extractVinFromWooOrder(wooResp);
+          if (metaCandidate && metaCandidate.value) {
+            nextValue = metaCandidate.value;
+          }
+        }
+      } catch (err) {
+        console.warn('[rebuildVin] fetch WooCommerce order failed', doc._id, err?.message || err);
+      }
+    }
+
+    if (!nextValue && hasMeta) {
+      const fallback = extractVinOrPlateFromText(doc.meta.notes?.join(' ') || '');
+      if (fallback && fallback.value) nextValue = fallback.value;
+    }
+
+    nextValue = typeof nextValue === 'string' ? nextValue.trim() : '';
+    if (nextValue && nextValue !== cleanPrev) {
+      doc.meta = doc.meta || {};
+      doc.meta.vinOrPlate = nextValue;
+      doc.events = doc.events || [];
+      doc.events.push({
+        type: 'vin_recomputed',
+        message: `VIN/Plaque recalculé: ${nextValue}`,
+        at: new Date()
+      });
+
+// Mettre à jour un modèle
+app.put('/api/admin/tasks/templates/:id', authenticateAdmin, ensureAdminOrAgent, async (req, res) => {
+  try {
+    const b = req.body || {};
+    const tpl = await TaskTemplate.findById(req.params.id);
+    if (!tpl) return res.status(404).json({ success: false, message: 'Modèle introuvable' });
+    if (b.name !== undefined) tpl.name = String(b.name || '').trim();
+    if (b.title !== undefined) tpl.title = String(b.title || '').trim();
+    if (b.description !== undefined) tpl.description = String(b.description || '').trim();
+    if (b.priority) tpl.priority = b.priority;
+    if (Array.isArray(b.tags)) tpl.tags = b.tags;
+    await tpl.save();
+    res.json({ success: true, template: tpl });
+  } catch (e) {
+    console.error('[tasks:templates:update] erreur', e);
+    if (e && e.code === 11000) {
+      return res.status(409).json({ success: false, message: 'Nom déjà utilisé' });
+    }
+    res.status(500).json({ success: false, message: 'Erreur serveur' });
+  }
+});
+
+// Dupliquer un modèle
+app.post('/api/admin/tasks/templates/:id/duplicate', authenticateAdmin, ensureAdminOrAgent, async (req, res) => {
+  try {
+    const source = await TaskTemplate.findById(req.params.id).lean();
+    if (!source) return res.status(404).json({ success: false, message: 'Modèle introuvable' });
+    const b = req.body || {};
+    const name = String(b.name || `${source.name} (copie)`).trim();
+    const doc = new TaskTemplate({
+      name,
+      title: source.title || '',
+      description: source.description || '',
+      priority: source.priority || 'medium',
+      tags: Array.isArray(source.tags) ? source.tags : []
+    });
+    await doc.save();
+    res.json({ success: true, template: doc });
+  } catch (e) {
+    console.error('[tasks:templates:duplicate] erreur', e);
+    if (e && e.code === 11000) {
+      return res.status(409).json({ success: false, message: 'Nom déjà utilisé' });
+    }
+    res.status(500).json({ success: false, message: 'Erreur serveur' });
+  }
+});
+      await doc.save();
+      updated++;
+    }
+  }
+  return { scanned, updated };
+}
+
+module.exports.rebuildVinOrPlateInternal = rebuildVinOrPlateInternal;
 
 // Initialisation de l'application Express
 const app = express();
@@ -410,7 +512,6 @@ async function syncWooAllOrders() {
           customer,
           totals: { currency, amount: isNaN(amount) ? 0 : amount, tax: taxTotal, shipping: shippingTotal },
           items,
-          events: [{ type: 'woo_sync_full', message: `Full sync Woo status=${payload.status}`, payloadSnippet: { id: wooId, status: payload.status } }],
           ...(wooCreated ? { 'meta.sourceCreatedAt': wooCreated } : {}),
           ...(wooUpdated ? { 'meta.sourceUpdatedAt': wooUpdated } : {}),
           ...(billingAddress ? { 'billing.address': billingAddress } : {}),
@@ -442,7 +543,7 @@ async function syncWooAllOrders() {
           const autoFlag = detectTechRefFromItems(items);
           if (autoFlag) setOnInsert['meta.technicalRefRequired'] = true;
         } catch {}
-        const ops = { $set: update, $setOnInsert: setOnInsert };
+        const ops = { $set: update, $setOnInsert: setOnInsert, $push: { events: { $each: [ { type: 'woo_sync_full', message: `Full sync Woo status=${payload.status}`, payloadSnippet: { id: wooId, status: payload.status }, at: new Date() } ] } } };
         await Order.updateOne(
           { provider: 'woocommerce', providerOrderId: wooId },
           ops,
@@ -518,6 +619,9 @@ const diskStorage = multer.diskStorage({
     cb(null, file.fieldname + '-' + uniqueSuffix + ext);
   }
 });
+
+// (routes des modèles de tâches déplacées plus bas après authenticateAdmin)
+// (routes des modèles de tâches déplacées plus bas après authenticateAdmin)
 
 // (route sync-woo-one déplacée plus bas)
 
@@ -625,6 +729,11 @@ function extractVinFromWooMeta(metaArr) {
       const byVin = looksVin(val) || (foundInText?.type === 'vin');
       const byPlate = looksFrPlate(val) || (foundInText?.type === 'plate');
 
+      // Si aucun motif VIN/plaque détecté, ignorer même si la clé semble pertinente
+      if (!byVin && !byPlate) {
+        continue;
+      }
+
       // Scoring: clé exacte + contenu trouvé > clé indicative + contenu > détection brute
       let score = -1;
       if (byExactKey && (byVin || byPlate)) score = 110;
@@ -687,12 +796,12 @@ function extractVinFromWooOrder(payload) {
 }
 // Mise à jour d'une commande (et sync Woo si provider=woocommerce)
 app.put('/api/admin/orders/:id', adminAuthMW, async (req, res) => {
-  try {
-    const order = await Order.findById(req.params.id);
-    if (!order) return res.status(404).json({ success: false, message: 'Commande introuvable' });
+  const body = req.body || {};
 
-    const body = req.body || {};
-    const next = { events: order.events || [] };
+  const applyUpdate = async (order) => {
+    if (!order) throw new Error('ORDER_NOT_FOUND');
+    const eventLog = Array.isArray(order.events) ? [...order.events] : [];
+    const allowedStatuses = Order?.schema?.path('status')?.enumValues || [];
 
     // Customer
     if (body.customer && typeof body.customer === 'object') {
@@ -726,12 +835,12 @@ app.put('/api/admin/orders/:id', adminAuthMW, async (req, res) => {
           const d = new Date(iso);
           if (!isNaN(d.getTime())) {
             order.shipping.estimatedDeliveryAt = d;
-            next.events.push({ type: 'estimated_delivery_set', message: `Livraison estimée: ${d.toISOString().slice(0,10)}`, at: new Date() });
+            eventLog.push({ type: 'estimated_delivery_set', message: `Livraison estimée: ${d.toISOString().slice(0,10)}`, at: new Date() });
           }
         } else {
           // Vide => suppression
           order.shipping.estimatedDeliveryAt = undefined;
-          next.events.push({ type: 'estimated_delivery_unset', message: 'Livraison estimée retirée', at: new Date() });
+          eventLog.push({ type: 'estimated_delivery_unset', message: 'Livraison estimée retirée', at: new Date() });
         }
       }
     }
@@ -751,19 +860,19 @@ app.put('/api/admin/orders/:id', adminAuthMW, async (req, res) => {
         const prev = order.meta.engineDisplacement || '';
         const nextVal = body.meta.engineDisplacement.trim();
         order.meta.engineDisplacement = nextVal;
-        if (nextVal !== prev) next.events.push({ type: 'technical_ref_updated', message: `Cylindrée: ${nextVal || '—'}`, at: new Date() });
+        if (nextVal !== prev) eventLog.push({ type: 'technical_ref_updated', message: `Cylindrée: ${nextVal || '—'}`, at: new Date() });
       }
       if (typeof body.meta.tcuReference === 'string') {
         const prev = order.meta.tcuReference || '';
         const nextVal = body.meta.tcuReference.trim().toUpperCase();
         order.meta.tcuReference = nextVal;
-        if (nextVal !== prev) next.events.push({ type: 'technical_ref_updated', message: `TCU: ${nextVal || '—'}`, at: new Date() });
+        if (nextVal !== prev) eventLog.push({ type: 'technical_ref_updated', message: `TCU: ${nextVal || '—'}`, at: new Date() });
       }
       if (typeof body.meta.technicalRefRequired === 'boolean') {
         const prev = !!order.meta.technicalRefRequired;
         const nextVal = !!body.meta.technicalRefRequired;
         order.meta.technicalRefRequired = nextVal;
-        if (nextVal !== prev) next.events.push({ type: 'technical_ref_required_set', message: nextVal ? 'Référence technique requise' : 'Référence technique non requise', at: new Date() });
+        if (nextVal !== prev) eventLog.push({ type: 'technical_ref_required_set', message: nextVal ? 'Référence technique requise' : 'Référence technique non requise', at: new Date() });
       }
     }
 
@@ -809,16 +918,13 @@ app.put('/api/admin/orders/:id', adminAuthMW, async (req, res) => {
         wooPayload.meta_data = metaArr;
       }
 
-      // Envoyer vers Woo d'abord, sinon on ne sauvegarde pas localement pour éviter les écarts
       const wooResp = await wooUpdateOrder(order.providerOrderId, wooPayload);
-      // Mettre à jour les dates source si renvoyées
       try {
         const wooCreated = wooResp.date_created_gmt || wooResp.date_created || null;
         const wooUpdated = wooResp.date_modified_gmt || wooResp.date_modified || null;
         order.meta = order.meta || {};
         if (wooCreated) order.meta.sourceCreatedAt = new Date(wooCreated);
         if (wooUpdated) order.meta.sourceUpdatedAt = new Date(wooUpdated);
-        // Actualiser vin/plaque et méta id/key depuis la réponse (meta, lignes, note)
         const metaFromResp = extractVinFromWooOrder(wooResp);
         if (metaFromResp && metaFromResp.value) {
           order.meta.vinOrPlate = metaFromResp.value;
@@ -826,16 +932,54 @@ app.put('/api/admin/orders/:id', adminAuthMW, async (req, res) => {
           if (metaFromResp.id) order.meta.wooVinMetaId = metaFromResp.id;
         }
       } catch {}
-      next.events.push({ type: 'woo_update_pushed', message: 'Mise à jour envoyée à Woo', payloadSnippet: { id: order.providerOrderId } });
+      eventLog.push({ type: 'woo_update_pushed', message: 'Mise à jour envoyée à Woo', payloadSnippet: { id: order.providerOrderId } });
     }
 
-    next.events.push({ type: 'order_updated_admin', message: 'Commande modifiée par admin' });
-    order.events = next.events;
+    if (typeof body.status === 'string') {
+      const nextRaw = body.status.trim().toLowerCase();
+      if (nextRaw && allowedStatuses.includes(nextRaw)) {
+        if (order.status !== nextRaw) {
+          eventLog.push({ type: 'status_changed', message: `Statut: ${order.status || '—'} → ${nextRaw}`, at: new Date() });
+          order.status = nextRaw;
+        }
+      } else if (nextRaw) {
+        throw new Error(`Statut invalide: ${nextRaw}`);
+      }
+    }
+
+    eventLog.push({ type: 'order_updated_admin', message: 'Commande modifiée par admin' });
+    order.events = eventLog;
     await order.save();
-    res.json({ success: true, order });
+    return order;
+  };
+
+  try {
+    let order = await Order.findById(req.params.id);
+    if (!order) return res.status(404).json({ success: false, message: 'Commande introuvable' });
+
+    const maxAttempts = 2;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      try {
+        order = await applyUpdate(order);
+        return res.json({ success: true, order });
+      } catch (err) {
+        if (err instanceof mongoose.Error.VersionError) {
+          console.warn(`[orders:update] conflit de version sur ${req.params.id}, tentative ${attempt + 1}`);
+          order = await Order.findById(req.params.id);
+          if (!order) return res.status(404).json({ success: false, message: 'Commande introuvable' });
+          continue;
+        }
+        throw err;
+      }
+    }
+
+    return res.status(409).json({ success: false, message: 'Conflit de mise à jour, réessayez.' });
   } catch (e) {
+    if (e.message === 'ORDER_NOT_FOUND') {
+      return res.status(404).json({ success: false, message: 'Commande introuvable' });
+    }
     console.error('[orders:update] erreur', e);
-    res.status(500).json({ success: false, message: e.message || 'Erreur serveur' });
+    return res.status(500).json({ success: false, message: e.message || 'Erreur serveur' });
   }
 });
 
@@ -992,7 +1136,6 @@ async function syncWooRecentOrders() {
         customer,
         totals: { currency, amount: isNaN(amount) ? 0 : amount, tax: taxTotal2, shipping: shippingTotal2 },
         items,
-        events: [{ type: 'woo_sync', message: `Sync Woo status=${payload.status}`, payloadSnippet: { id: wooId, status: payload.status } }],
         ...(wooCreated ? { 'meta.sourceCreatedAt': wooCreated } : {}),
         ...(wooUpdated ? { 'meta.sourceUpdatedAt': wooUpdated } : {}),
         ...(billingAddress2 ? { 'billing.address': billingAddress2 } : {}),
@@ -1023,7 +1166,7 @@ async function syncWooRecentOrders() {
         const autoFlag = detectTechRefFromItems(items);
         if (autoFlag) setOnInsert['meta.technicalRefRequired'] = true;
       } catch {}
-      const ops2 = { $set: update, $setOnInsert: setOnInsert };
+      const ops2 = { $set: update, $setOnInsert: setOnInsert, $push: { events: { $each: [ { type: 'woo_sync', message: `Sync Woo status=${payload.status}`, payloadSnippet: { id: wooId, status: payload.status }, at: new Date() } ] } } };
       await Order.updateOne(
         { provider: 'woocommerce', providerOrderId: wooId },
         ops2,
@@ -1612,7 +1755,14 @@ const authenticateAdmin = async (req, res, next) => {
   // Vérification des identifiants ENV/directeur (fallback)
   if ((username === process.env.ADMIN_USERNAME && password === process.env.ADMIN_PASSWORD) ||
       (DIRECTOR_ACCOUNT_ENABLED && username.toLowerCase() === directeurUsername && password === directeurPassword)) {
-    req.auth = { type: 'env', role: 'admin', username };
+    req.auth = {
+      type: 'env',
+      role: 'admin',
+      id: `env-${username || 'admin'}`,
+      email: username,
+      firstName: 'Admin',
+      lastName: 'Principal'
+    };
     return next();
   }
 
@@ -1659,6 +1809,49 @@ app.get('/api/admin/me', authenticateAdmin, (req, res) => {
   }
 });
 
+// ========= Modèles de tâches =========
+// Liste des modèles
+app.get('/api/admin/tasks/templates', authenticateAdmin, ensureAdminOrAgent, async (req, res) => {
+  try {
+    const list = await TaskTemplate.find({}).sort({ createdAt: -1 }).lean();
+    res.json({ success: true, templates: list });
+  } catch (e) {
+    console.error('[tasks:templates:list] erreur', e);
+    res.status(500).json({ success: false, message: 'Erreur serveur' });
+  }
+});
+
+// Créer un modèle
+app.post('/api/admin/tasks/templates', authenticateAdmin, ensureAdminOrAgent, async (req, res) => {
+  try {
+    const b = req.body || {};
+    const name = String(b.name || '').trim();
+    if (!name) return res.status(400).json({ success: false, message: 'Nom requis' });
+    const t = new TaskTemplate({
+      name,
+      title: String(b.title || '').trim(),
+      description: String(b.description || '').trim(),
+      priority: b.priority || 'medium',
+      tags: Array.isArray(b.tags) ? b.tags : []
+    });
+    await t.save();
+    res.json({ success: true, template: t });
+  } catch (e) {
+    console.error('[tasks:templates:create] erreur', e);
+    res.status(500).json({ success: false, message: 'Erreur serveur' });
+  }
+});
+
+// Supprimer un modèle
+app.delete('/api/admin/tasks/templates/:id', authenticateAdmin, ensureAdmin, async (req, res) => {
+  try {
+    await TaskTemplate.findByIdAndDelete(req.params.id);
+    res.json({ success: true });
+  } catch (e) {
+    console.error('[tasks:templates:delete] erreur', e);
+    res.status(500).json({ success: false, message: 'Erreur serveur' });
+  }
+});
 // Diagnostic des variables d'environnement (ADMIN uniquement)
 app.get('/api/admin/diagnostics/env', authenticateAdmin, ensureAdmin, (req, res) => {
   const mask = (v, start = 2, end = 4) => {
@@ -3151,11 +3344,20 @@ app.get('/api/admin/orders', authenticateAdmin, ensureAdminOrAgent, async (req, 
     if (provider) filter.provider = provider;
     if (productType) filter['meta.productType'] = productType;
     if (q) {
+      const escapeRegExp = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const escaped = escapeRegExp(q);
+      const vinPattern = escapeRegExp(q).replace(/[-\s]+/g, '[-\\s]*');
+      const genericRegex = new RegExp(escaped, 'i');
+      const vinRegex = new RegExp(vinPattern, 'i');
       filter.$or = [
-        { number: new RegExp(q, 'i') },
-        { 'customer.email': new RegExp(q, 'i') },
-        { 'items.name': new RegExp(q, 'i') },
-        { 'items.sku': new RegExp(q, 'i') }
+        { number: genericRegex },
+        { providerOrderId: genericRegex },
+        { 'customer.email': genericRegex },
+        { 'customer.name': genericRegex },
+        { 'items.name': genericRegex },
+        { 'items.sku': genericRegex },
+        { 'meta.notes': genericRegex },
+        { 'meta.vinOrPlate': vinRegex }
       ];
     }
     if (missingTechRef === '1' || missingTechRef === 'true' || missingTechRef === 'yes') {
@@ -3328,6 +3530,99 @@ app.get('/api/admin/orders', authenticateAdmin, ensureAdminOrAgent, async (req, 
     res.json({ success: true, page, limit, total: totalDocuments, metrics, orders });
   } catch (e) {
     console.error('[orders:list] erreur', e);
+    res.status(500).json({ success: false, message: 'Erreur serveur' });
+  }
+});
+
+// Liste condensée des commandes prêtes à être expédiées
+app.get('/api/admin/orders/shipments', authenticateAdmin, ensureAdminOrAgent, async (req, res) => {
+  try {
+    const rawStatuses = String(req.query.status || '').split(',').map(s => s.trim()).filter(Boolean);
+    const allowedStatuses = ['pending_payment', 'awaiting_transfer', 'paid', 'processing', 'partially_fulfilled', 'awaiting_shipment'];
+    const statuses = rawStatuses.length ? rawStatuses.filter(s => allowedStatuses.includes(s)) : allowedStatuses;
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit || '50', 10)));
+
+    const shipmentFilter = {
+      status: { $in: statuses },
+      $or: [
+        { 'shipping.shippedAt': { $exists: false } },
+        { 'shipping.shippedAt': null }
+      ]
+    };
+
+    const [totalAwaiting, shipmentsRaw] = await Promise.all([
+      Order.countDocuments(shipmentFilter),
+      Order.find(shipmentFilter)
+        .sort({ 'shipping.estimatedDeliveryAt': 1, createdAt: 1 })
+        .limit(limit)
+        .lean({ getters: true })
+    ]);
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+
+    let dueToday = 0;
+    let overdue = 0;
+    let withEstimatedDate = 0;
+
+    const shipments = shipmentsRaw.map(order => {
+      const estimated = order?.shipping?.estimatedDeliveryAt ? new Date(order.shipping.estimatedDeliveryAt) : null;
+      const created = order?.createdAt ? new Date(order.createdAt) : null;
+      let estimatedIso = null;
+      if (estimated && !isNaN(estimated.getTime())) {
+        estimatedIso = estimated.toISOString();
+        withEstimatedDate += 1;
+        if (estimated < today) overdue += 1;
+        else if (estimated >= today && estimated < tomorrow) dueToday += 1;
+      }
+
+      const trackingNumber = order?.shipping?.trackingNumber || '';
+      const carrier = order?.shipping?.carrier || '';
+
+      return {
+        id: String(order._id),
+        number: order.number || '',
+        provider: order.provider || 'manual',
+        status: order.status || 'processing',
+        customer: {
+          name: order?.customer?.name || '',
+          email: order?.customer?.email || '',
+          phone: order?.customer?.phone || ''
+        },
+        createdAt: created ? created.toISOString() : null,
+        estimatedDeliveryAt: estimatedIso,
+        totals: {
+          amount: order?.totals?.amount ?? 0,
+          currency: order?.totals?.currency || 'EUR'
+        },
+        shippingAddress: order?.shipping?.address || {},
+        tracking: {
+          number: trackingNumber,
+          carrier,
+          hasTracking: Boolean(trackingNumber)
+        },
+        meta: {
+          vinOrPlate: order?.meta?.vinOrPlate || ''
+        }
+      };
+    });
+
+    res.json({
+      success: true,
+      total: totalAwaiting,
+      count: shipments.length,
+      stats: {
+        dueToday,
+        overdue,
+        withEstimatedDate,
+        withoutEstimatedDate: Math.max(totalAwaiting - withEstimatedDate, 0)
+      },
+      shipments
+    });
+  } catch (e) {
+    console.error('[orders:shipments] erreur', e);
     res.status(500).json({ success: false, message: 'Erreur serveur' });
   }
 });
@@ -4002,8 +4297,229 @@ app.delete('/api/admin/tickets/:ticketId', authenticateAdmin, async (req, res) =
   }
 });
 
+// --- Routes API Tâches (Todolist) ---
+// Liste des tâches avec filtres
+app.get('/api/admin/tasks', authenticateAdmin, ensureAdminOrAgent, async (req, res) => {
+  try {
+    const page = Math.max(1, parseInt(req.query.page || '1', 10));
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit || '50', 10)));
+    const skip = (page - 1) * limit;
+    const status = String(req.query.status || '').trim();
+    const priority = String(req.query.priority || '').trim();
+    const assignedTo = String(req.query.assignedTo || '').trim();
+    const q = String(req.query.q || '').trim();
+    const overdue = String(req.query.overdue || '').trim() === '1';
+    const dueToday = String(req.query.dueToday || '').trim() === '1';
+    const urgentOnly = String(req.query.urgentOnly || '').trim() === '1';
+    const unassigned = String(req.query.unassigned || '').trim() === '1';
+
+    const filter = {};
+    if (status) filter.status = status;
+    if (priority) filter.priority = priority;
+    if (assignedTo && assignedTo !== 'all' && assignedTo !== 'unassigned') filter.assignedTo = assignedTo;
+    if (unassigned || assignedTo === 'unassigned') filter.assignedTo = { $in: [null, undefined] };
+    if (q) {
+      filter.$or = [
+        { title: new RegExp(q, 'i') },
+        { description: new RegExp(q, 'i') },
+        { tags: new RegExp(q, 'i') }
+      ];
+    }
+
+    // Filtres d'échéance
+    const now = new Date();
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const endOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+    if (overdue) {
+      filter.status = filter.status || { $ne: 'done' };
+      filter.dueDate = { $lte: now };
+    }
+    if (dueToday) {
+      filter.dueDate = { $gte: startOfToday, $lte: endOfToday };
+    }
+    if (urgentOnly) {
+      filter.priority = { $in: ['high', 'urgent'] };
+      if (!filter.status) filter.status = { $ne: 'done' };
+    }
+
+    const tasks = await Task.find(filter)
+      .sort({ priority: -1, dueDate: 1, createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean();
+    const total = await Task.countDocuments(filter);
+
+    // Résumé rapide pour KPIs
+    const summary = {
+      open: await Task.countDocuments({ status: { $ne: 'done' } }),
+      inProgress: await Task.countDocuments({ status: 'in_progress' }),
+      urgent: await Task.countDocuments({ status: { $ne: 'done' }, priority: { $in: ['high','urgent'] } }),
+      done30: await Task.countDocuments({ status: 'done', completedAt: { $gte: new Date(Date.now() - 30*24*60*60*1000) } })
+    };
+
+    res.json({ success: true, tasks, total, page, limit, summary });
+  } catch (e) {
+    console.error('[tasks:list] erreur', e);
+    res.status(500).json({ success: false, message: 'Erreur serveur' });
+  }
+});
+
+// Créer une tâche
+app.post('/api/admin/tasks', authenticateAdmin, ensureAdminOrAgent, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const title = String(body.title || '').trim();
+    if (!title) return res.status(400).json({ success: false, message: 'Titre requis' });
+
+    const createdByRaw = req.auth?._id || req.auth?.id;
+    const createdBy = (createdByRaw && mongoose.Types.ObjectId.isValid(createdByRaw)) ? createdByRaw : undefined;
+    const createdByName = req.auth?.firstName ? `${req.auth.firstName} ${req.auth.lastName || ''}`.trim() : (req.auth?.email || 'Admin');
+
+    const taskPayload = {
+      title,
+      description: String(body.description || '').trim(),
+      status: body.status || 'todo',
+      priority: body.priority || 'medium',
+      assignedTo: body.assignedTo || null,
+      assignedToName: body.assignedToName || '',
+      createdByName,
+      dueDate: body.dueDate ? new Date(body.dueDate) : null,
+      tags: Array.isArray(body.tags) ? body.tags : []
+    };
+    if (createdBy) taskPayload.createdBy = createdBy;
+    const task = new Task(taskPayload);
+    
+    // Debug léger
+    // console.log('[tasks:create] payload', { title: task.title, createdBy: task.createdBy, createdByName: task.createdByName });
+
+    await task.save();
+    res.json({ success: true, task });
+  } catch (e) {
+    console.error('[tasks:create] erreur', e);
+    res.status(500).json({ success: false, message: 'Erreur serveur' });
+  }
+});
+
+// Mettre à jour une tâche
+app.put('/api/admin/tasks/:id', authenticateAdmin, ensureAdminOrAgent, async (req, res) => {
+  try {
+    const task = await Task.findById(req.params.id);
+    if (!task) return res.status(404).json({ success: false, message: 'Tâche introuvable' });
+
+    const body = req.body || {};
+    if (body.title) task.title = String(body.title).trim();
+    if (body.description !== undefined) task.description = String(body.description).trim();
+    if (body.status) {
+      task.status = body.status;
+      if (body.status === 'done' && !task.completedAt) task.completedAt = new Date();
+      if (body.status !== 'done') task.completedAt = null;
+    }
+    if (body.priority) task.priority = body.priority;
+    if (body.assignedTo !== undefined) task.assignedTo = body.assignedTo || null;
+    if (body.assignedToName !== undefined) task.assignedToName = body.assignedToName || '';
+    if (body.dueDate !== undefined) task.dueDate = body.dueDate ? new Date(body.dueDate) : null;
+    if (Array.isArray(body.tags)) task.tags = body.tags;
+
+    await task.save();
+    res.json({ success: true, task });
+  } catch (e) {
+    console.error('[tasks:update] erreur', e);
+    res.status(500).json({ success: false, message: 'Erreur serveur' });
+  }
+});
+
+// Supprimer une tâche
+app.delete('/api/admin/tasks/:id', authenticateAdmin, ensureAdmin, async (req, res) => {
+  try {
+    const task = await Task.findById(req.params.id);
+    if (!task) return res.status(404).json({ success: false, message: 'Tâche introuvable' });
+    await task.deleteOne();
+    res.json({ success: true });
+  } catch (e) {
+    console.error('[tasks:delete] erreur', e);
+    res.status(500).json({ success: false, message: 'Erreur serveur' });
+  }
+});
+
+// Liste des membres SAV pour l'assignation des tâches
+app.get('/api/admin/tasks/team', authenticateAdmin, ensureAdminOrAgent, async (req, res) => {
+  try {
+    const users = await User.find({ isActive: true })
+      .select('firstName lastName email role')
+      .sort({ firstName: 1, lastName: 1 })
+      .lean();
+    const team = users.map(u => ({
+      id: String(u._id),
+      name: `${u.firstName || ''} ${u.lastName || ''}`.trim() || (u.email || 'Utilisateur'),
+      email: u.email || '',
+      role: u.role || 'agent'
+    }));
+    res.json({ success: true, team });
+  } catch (e) {
+    console.error('[tasks:team] erreur', e);
+    res.status(500).json({ success: false, message: 'Erreur serveur' });
+  }
+});
+
 // Initialiser les routes de statistiques pour le dashboard
 setupStatsRoutes(app, authenticateAdmin);
+
+// ========= Rappels de tâches & Digest =========
+(function startTasksSchedulers() {
+  // Rappels J-1 et jour J (toutes les heures)
+  async function runTaskReminders() {
+    try {
+      const now = new Date();
+      const inOneHour = new Date(Date.now() + 60*60*1000);
+      const in24hStart = new Date(Date.now() + 24*60*60*1000);
+      const in24hEnd = new Date(Date.now() + 25*60*60*1000);
+      // Jour J: due dans l'heure
+      const dayOfTasks = await Task.find({ assignedTo: { $ne: null }, status: { $ne: 'done' }, dueDate: { $gte: now, $lte: inOneHour } }).lean();
+      for (const t of dayOfTasks) {
+        await maybeNotifyTaskReminder(t, 'Rappel échéance', `"${t.title}" arrive à échéance vers ${t.dueDate?.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`);
+      }
+      // J-1: due entre 24h et 25h
+      const dayMinusOne = await Task.find({ assignedTo: { $ne: null }, status: { $ne: 'done' }, dueDate: { $gte: in24hStart, $lte: in24hEnd } }).lean();
+      for (const t of dayMinusOne) {
+        await maybeNotifyTaskReminder(t, 'Rappel J-1', `"${t.title}" est prévu demain (${new Date(t.dueDate).toLocaleDateString('fr-FR')})`);
+      }
+    } catch (e) { console.warn('[tasks:reminders] erreur', e); }
+  }
+
+  async function maybeNotifyTaskReminder(task, title, message) {
+    try {
+      if (!task.assignedTo) return;
+      const recent = await Notification.findOne({ userId: task.assignedTo, type: 'task_reminder', taskId: task._id, createdAt: { $gte: new Date(Date.now() - 12*60*60*1000) } });
+      if (recent) return;
+      await Notification.create({ userId: task.assignedTo, type: 'task_reminder', taskId: task._id, title, message });
+    } catch (_) {}
+  }
+
+  let lastDigestDay = null;
+  async function runMorningDigestIfNeeded() {
+    const now = new Date();
+    const hour = now.getHours();
+    const dayKey = now.toISOString().slice(0,10);
+    if (hour !== 8 || lastDigestDay === dayKey) return;
+    try {
+      // Par agent: urgences + échéances du jour
+      const users = await User.find({ isActive: true }).select('_id').lean();
+      const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      const endOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+      for (const u of users) {
+        const urgentCount = await Task.countDocuments({ assignedTo: u._id, status: { $ne: 'done' }, priority: { $in: ['high','urgent'] } });
+        const dueTodayCount = await Task.countDocuments({ assignedTo: u._id, status: { $ne: 'done' }, dueDate: { $gte: startOfToday, $lte: endOfToday } });
+        if (urgentCount + dueTodayCount > 0) {
+          await Notification.create({ userId: u._id, type: 'task_digest', title: 'Digest du jour', message: `${urgentCount} urgent(es), ${dueTodayCount} échéance(s) aujourd'hui` });
+        }
+      }
+      lastDigestDay = dayKey;
+    } catch (e) { console.warn('[tasks:digest] erreur', e); }
+  }
+
+  setInterval(runTaskReminders, 60*60*1000);
+  setInterval(runMorningDigestIfNeeded, 10*60*1000);
+})();
 
 // Gestionnaire global d'erreurs pour renvoyer un JSON propre (notamment pour Multer)
 app.use((err, req, res, next) => {
