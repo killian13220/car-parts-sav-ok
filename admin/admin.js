@@ -257,10 +257,15 @@ function openEditOrderModal(orderId) {
             </div>
           </div>
         `;
+        // IMPORTANT : Ajouter la modale au DOM
+        root.appendChild(modal);
+        console.debug('[orders] openEditOrderModal: modal HTML créé et ajouté au DOM');
+        console.debug('[orders] openEditOrderModal: root.style.display=', root.style.display);
+        console.debug('[orders] openEditOrderModal: modal enfants count=', root.children.length);
+        
         const onCleanup = () => { root.style.display = 'none'; root.innerHTML=''; root.removeEventListener('click', onOverlayClick); };
         const onOverlayClick = (e) => { if (e.target === root) onCleanup(); };
         root.addEventListener('click', onOverlayClick);
-        console.debug('[orders] openEditOrderModal: modal appended to root, visible=', root.style.display);
         const closeBtn = modal.querySelector('[data-action="close"]');
         if (closeBtn) closeBtn.addEventListener('click', onCleanup);
 
@@ -3857,17 +3862,69 @@ async function checkAuth() {
     async function openTaskModal(taskId = null) {
         await ensureTasksTeamLoaded();
         const root = ensureModalRoot();
-        root.style.display = 'flex';
+        // Overlay robuste et visible au-dessus de tout
+        try {
+            if (root.parentNode !== document.body || document.body.lastElementChild !== root) document.body.appendChild(root);
+        } catch(_) {}
+        try {
+            root.style.setProperty('position', 'fixed', 'important');
+            root.style.setProperty('inset', '0', 'important');
+            root.style.setProperty('z-index', '2147483647', 'important');
+            root.style.setProperty('display', 'flex', 'important');
+            root.style.setProperty('align-items', 'center', 'important');
+            root.style.setProperty('justify-content', 'center', 'important');
+            root.style.setProperty('background-color', 'rgba(0,0,0,0.35)', 'important');
+            root.style.setProperty('pointer-events', 'auto', 'important');
+        } catch(_) {
+            root.style.position = 'fixed';
+            root.style.top = '0';
+            root.style.left = '0';
+            root.style.right = '0';
+            root.style.bottom = '0';
+            root.style.zIndex = '2147483647';
+            root.style.display = 'flex';
+            root.style.alignItems = 'center';
+            root.style.justifyContent = 'center';
+            root.style.backgroundColor = 'rgba(0,0,0,0.35)';
+            root.style.pointerEvents = 'auto';
+        }
         root.innerHTML = '';
         const modal = document.createElement('div');
         modal.className = 'cpf-modal';
-        modal.style.maxWidth = '640px';
+        // Styles forts pour garantir un rendu propre
+        modal.style.maxWidth = '720px';
+        modal.style.width = '95vw';
+        modal.style.maxHeight = '90vh';
+        modal.style.display = 'flex';
+        modal.style.flexDirection = 'column';
+        modal.style.background = '#ffffff';
+        modal.style.borderRadius = '12px';
+        modal.style.boxShadow = '0 20px 50px rgba(0,0,0,0.25)';
+        try {
+            modal.style.setProperty('z-index', '2147483647', 'important');
+            modal.style.setProperty('visibility', 'visible', 'important');
+            modal.style.setProperty('opacity', '1', 'important');
+        } catch(_) {}
         modal.innerHTML = `
             <div class="cpf-modal-header">
                 <div class="icon"><i class="fas fa-tasks"></i></div>
                 <div class="cpf-modal-title">${taskId ? 'Modifier la tâche' : 'Nouvelle tâche'}</div>
             </div>
             <div class="cpf-modal-body">
+                <style>
+                  .cpf-modal-header { align-items:center; gap:12px; border-bottom:1px solid rgba(148,163,184,0.25); padding:16px 20px; background:linear-gradient(135deg,#22c55e 0%, #16a34a 100%); color:#fff; border-top-left-radius:12px; border-top-right-radius:12px; }
+                  .cpf-modal-title { font-size:18px; font-weight:600; }
+                  .cpf-modal-body { padding:16px 20px; background:#f8fafc; }
+                  .cpf-modal-actions { padding:12px 16px; display:flex; gap:10px; justify-content:flex-end; border-top:1px solid rgba(148,163,184,0.2); background:#fff; border-bottom-left-radius:12px; border-bottom-right-radius:12px; }
+                  .cpf-modal .form-group { display:flex; flex-direction:column; gap:6px; margin-bottom:12px; }
+                  .cpf-modal .form-group label { font-size:13px; font-weight:500; color:#475569; }
+                  .cpf-modal input, .cpf-modal select, .cpf-modal textarea { border:1px solid rgba(148,163,184,0.6); border-radius:10px; padding:10px 12px; background:#fff; transition:all 0.15s ease; }
+                  .cpf-modal input:focus, .cpf-modal select:focus, .cpf-modal textarea:focus { outline:none; border-color:#2563eb; box-shadow:0 0 0 3px rgba(37,99,235,0.15); }
+                  .cpf-modal textarea { min-height:96px; resize:vertical; }
+                  @media (max-width: 720px) {
+                    .cpf-modal .form-row { grid-template-columns: 1fr !important; }
+                  }
+                </style>
                 <div class="form-group">
                     <label for="task-template">Modèle</label>
                     <select id="task-template"><option value="">Aucun</option></select>
@@ -3880,7 +3937,7 @@ async function checkAuth() {
                     <label for="task-description">Description</label>
                     <textarea id="task-description" rows="3"></textarea>
                 </div>
-                <div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+                <div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
                     <div class="form-group">
                         <label for="task-status">Statut</label>
                         <select id="task-status">
