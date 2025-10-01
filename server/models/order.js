@@ -69,7 +69,9 @@ const orderSchema = new mongoose.Schema({
     technicalRefRequired: { type: Boolean, default: false },
     // Type de produit (pour filtrer et trier la liste des commandes)
     // Valeurs possibles: mecatronique_tcu, pont, boite_transfert, moteur, autres
-    productType: { type: String, enum: ['mecatronique_tcu','pont','boite_transfert','moteur','autres'], default: 'autres', index: true }
+    productType: { type: String, enum: ['mecatronique_tcu','pont','boite_transfert','moteur','autres'], default: 'autres', index: true },
+    // Version de synchronisation pour protéger les champs saisis manuellement
+    syncVersion: { type: Number, default: 0 }
   },
   events: [orderEventSchema]
 }, { timestamps: true });
