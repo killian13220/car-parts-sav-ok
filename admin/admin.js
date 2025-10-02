@@ -122,6 +122,8 @@ function openEditOrderModal(orderId) {
         root.style.display = 'flex';
         root.style.alignItems = 'center';
         root.style.justifyContent = 'center';
+        const prevBodyOverflow = (document.body && document.body.style) ? document.body.style.overflow : '';
+        try { document.body.style.overflow = 'hidden'; } catch(_) {}
         root.innerHTML = '';
         const modal = document.createElement('div');
         modal.className = 'cpf-modal';
@@ -176,9 +178,11 @@ function openEditOrderModal(orderId) {
               .co-field textarea:focus { outline:none; border-color:#2563eb; box-shadow:0 0 0 3px rgba(37,99,235,0.15); background:#fff; }
               .cpf-modal-actions { position:sticky; bottom:0; left:0; padding:16px 24px; background:rgba(248,250,252,0.95); border-top:1px solid rgba(148,163,184,0.2); display:flex; flex-wrap:wrap; gap:12px; align-items:center; justify-content:space-between; }
               .cpf-modal-actions__buttons { display:flex; gap:10px; margin-left:auto; }
+              .cpf-btn { height:40px; padding:0 14px; border-radius:10px; border:1px solid rgba(148,163,184,0.6); background:#fff; font-weight:600; cursor:pointer; }
+              .cpf-btn-primary { background:linear-gradient(135deg,#2563eb 0%,#1d4ed8 100%); color:#fff; border-color:transparent; }
+              .cpf-btn-primary:hover { filter:brightness(0.98); }
               .cpf-btn-secondary { background:#f1f5f9; color:#0f172a; }
               .cpf-btn-secondary:hover { background:#e2e8f0; }
-              .co-error { display:none; padding:10px 14px; border-radius:10px; background:#fee2e2; color:#991b1b; border:1px solid rgba(220,38,38,0.3); font-size:13px; font-weight:500; }
               @media (max-width: 720px) {
                 .co-order-modal-body { padding:16px; }
                 .cpf-modal-actions { flex-direction:column; align-items:stretch; }
@@ -263,7 +267,7 @@ function openEditOrderModal(orderId) {
         console.debug('[orders] openEditOrderModal: root.style.display=', root.style.display);
         console.debug('[orders] openEditOrderModal: modal enfants count=', root.children.length);
         
-        const onCleanup = () => { root.style.display = 'none'; root.innerHTML=''; root.removeEventListener('click', onOverlayClick); };
+        const onCleanup = () => { root.style.display = 'none'; root.innerHTML=''; root.removeEventListener('click', onOverlayClick); try { document.body.style.overflow = prevBodyOverflow || ''; } catch(_) {} };
         const onOverlayClick = (e) => { if (e.target === root) onCleanup(); };
         root.addEventListener('click', onOverlayClick);
         const closeBtn = modal.querySelector('[data-action="close"]');
@@ -287,13 +291,13 @@ function openEditOrderModal(orderId) {
             const d = new Date(); d.setHours(0,0,0,0); d.setDate(d.getDate() + days);
             input.value = d.toISOString().slice(0,10);
           };
-          modal.querySelectorAll('.quick-date .qd').forEach(btn => {
+          modal.querySelectorAll('.co-quick-date .qd').forEach(btn => {
             btn.addEventListener('click', () => {
               const add = parseInt(btn.dataset.add || '0', 10) || 0;
               setByOffset(estEl, add);
             });
           });
-          const clearBtn = modal.querySelector('.quick-date .qd-clear');
+          const clearBtn = modal.querySelector('.co-quick-date .qd-clear');
           if (clearBtn) clearBtn.addEventListener('click', () => { if (estEl) estEl.value = ''; });
         } catch {}
         const shipSame = modal.querySelector('#ed-ship-same');
