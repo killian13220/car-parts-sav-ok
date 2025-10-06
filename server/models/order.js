@@ -80,6 +80,7 @@ orderSchema.index({ provider: 1, providerOrderId: 1 }, { unique: true, sparse: t
 orderSchema.index({ 'payment.molliePaymentId': 1 }, { unique: true, sparse: true });
 orderSchema.index({ status: 1, updatedAt: -1 });
 orderSchema.index({ 'customer.email': 1 });
+orderSchema.index({ 'shipping.trackingNumber': 1 });
 
 const Order = mongoose.model('Order', orderSchema);
 module.exports = Order;

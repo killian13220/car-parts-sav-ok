@@ -20,6 +20,7 @@ const Documentation = require('./models/documentation');
 const Order = require('./models/order');
 const Task = require('./models/task');
 const TaskTemplate = require('./models/taskTemplate');
+const ReviewInvite = require('./models/reviewInvite');
 const bcrypt = require('bcryptjs');
 // Assurer la disponibilité de fetch côté serveur (Node < 18)
 let fetch = global.fetch;
@@ -74,12 +75,13 @@ function detectProductTypeFromItems(items) {
     return 'autres';
   } catch { return 'autres'; }
 }
-const { sendStatusUpdateEmail, sendTicketCreationEmail, sendAssignmentEmail, sendAssistanceRequestEmail, sendEscalationEmail, sendSlaReminderEmail, sendPasswordResetEmail } = require('./services/emailService');
+const { sendStatusUpdateEmail, sendTicketCreationEmail, sendAssignmentEmail, sendAssistanceRequestEmail, sendEscalationEmail, sendSlaReminderEmail, sendPasswordResetEmail, sendNegativeReviewFeedback, sendReviewInviteEmail } = require('./services/emailService');
 const setupStatsRoutes = require('./stats-api');
 const { authenticateAdmin: adminAuthMW } = require('./middleware/auth');
 const { startSlaWatcher } = require('./jobs/slaWatcher');
 require('dotenv').config();
 const { isS3Enabled, uploadBuffer, streamToResponse } = require('./services/storage');
+const { getCarrierTrackingEvents, getCarrierPublicLink } = require('./services/carrierTracking');
 
 module.exports.rebuildTechnicalRefsInternal = rebuildTechnicalRefsInternal;
 
@@ -149,6 +151,129 @@ app.put('/api/admin/tasks/templates/:id', authenticateAdmin, ensureAdminOrAgent,
   }
 });
 
+// Liste des invitations (admin) avec recherche/tri/pagination
+app.get('/api/admin/reviews/invites', adminAuthMW, async (req, res) => {
+  try {
+    const q = String(req.query.q || req.query.query || '').trim();
+    const sortKey = String(req.query.sort || 'createdAt');
+    const dir = String(req.query.dir || 'desc').toLowerCase() === 'asc' ? 1 : -1;
+    const page = Math.max(parseInt(req.query.page || '1', 10) || 1, 1);
+    const pageSize = Math.min(Math.max(parseInt(req.query.pageSize || '20', 10) || 20, 1), 200);
+
+    const filter = {};
+    if (q) {
+      const re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+      filter.$or = [
+        { email: re },
+        { orderNumber: re },
+        { token: re }
+      ];
+    }
+
+    const total = await ReviewInvite.countDocuments(filter);
+    const list = await ReviewInvite.find(filter)
+      .sort({ [sortKey]: dir, _id: -1 })
+      .skip((page - 1) * pageSize)
+      .limit(pageSize)
+      .lean();
+
+    const base = (WEBSITE_URL || '').replace(/\/$/, '');
+    const rows = list.map(inv => {
+      const token = inv.token;
+      const yesLink = `${base}/r/yes/${token}`;
+      const noLink = `${base}/r/no/${token}`;
+      return { ...inv, yesLink, noLink };
+    });
+
+    res.json({ success: true, total, page, pageSize, invites: rows });
+  } catch (e) {
+    console.error('[reviews] list invites error:', e);
+    res.status(500).json({ success: false, message: 'Erreur serveur' });
+  }
+});
+
+// Export CSV des invitations (admin)
+app.get('/api/admin/reviews/invites/export.csv', adminAuthMW, async (req, res) => {
+  try {
+    const q = String(req.query.q || req.query.query || '').trim();
+    const sortKey = String(req.query.sort || 'createdAt');
+    const dir = String(req.query.dir || 'desc').toLowerCase() === 'asc' ? 1 : -1;
+    const filter = {};
+    if (q) {
+      const re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+      filter.$or = [ { email: re }, { orderNumber: re }, { token: re } ];
+    }
+    const list = await ReviewInvite.find(filter).sort({ [sortKey]: dir, _id: -1 }).lean();
+    const base = (WEBSITE_URL || '').replace(/\/$/, '');
+    const lines = [];
+    lines.push(['createdAt','email','orderNumber','token','yesLink','noLink','decision','clickedYesAt','clickedNoAt','lockedByNo','revoked','revokedAt','feedbackReason'].join(','));
+    for (const inv of list) {
+      const yesLink = `${base}/r/yes/${inv.token}`;
+      const noLink = `${base}/r/no/${inv.token}`;
+      const cells = [
+        inv.createdAt ? new Date(inv.createdAt).toISOString() : '',
+        inv.email || '',
+        inv.orderNumber || '',
+        inv.token || '',
+        yesLink,
+        noLink,
+        inv.decision || '',
+        inv.clickedYesAt ? new Date(inv.clickedYesAt).toISOString() : '',
+        inv.clickedNoAt ? new Date(inv.clickedNoAt).toISOString() : '',
+        inv.lockedByNo ? 'true' : 'false',
+        inv.revoked ? 'true' : 'false',
+        inv.revokedAt ? new Date(inv.revokedAt).toISOString() : '',
+        (inv.feedbackReason || '').replace(/[\r\n,]/g, ' ')
+      ];
+      lines.push(cells.map(v => typeof v === 'string' && v.includes(',') ? '"' + v.replace(/"/g, '""') + '"' : v).join(','));
+    }
+    const csv = lines.join('\n');
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="review-invites.csv"');
+    res.send(csv);
+  } catch (e) {
+    console.error('[reviews] export csv error:', e);
+    res.status(500).send('Erreur serveur');
+  }
+});
+
+// Renvoyer l'email d'invitation (admin)
+app.post('/api/admin/reviews/invites/:id/resend', adminAuthMW, async (req, res) => {
+  try {
+    const id = String(req.params.id || '').trim();
+    const inv = await ReviewInvite.findById(id).lean();
+    if (!inv) return res.status(404).json({ success: false, message: 'Invitation introuvable' });
+    if (inv.revoked) return res.status(400).json({ success: false, message: 'Invitation révoquée' });
+    const base = (WEBSITE_URL || '').replace(/\/$/, '');
+    const yesLink = `${base}/r/yes/${inv.token}`;
+    const noLink = `${base}/r/no/${inv.token}`;
+    const toEmail = String(req.body?.toEmail || inv.email || '').trim();
+    if (!toEmail) return res.status(400).json({ success: false, message: 'Email destinataire requis' });
+    try { await sendReviewInviteEmail({ toEmail, yesLink, noLink }); } catch (e) { console.warn('[reviews] resend email failed:', e?.message || e); }
+    res.json({ success: true });
+  } catch (e) {
+    console.error('[reviews] resend error:', e);
+    res.status(500).json({ success: false, message: 'Erreur serveur' });
+  }
+});
+
+// Révoquer une invitation (admin)
+app.post('/api/admin/reviews/invites/:id/revoke', adminAuthMW, async (req, res) => {
+  try {
+    const id = String(req.params.id || '').trim();
+    const inv = await ReviewInvite.findById(id);
+    if (!inv) return res.status(404).json({ success: false, message: 'Invitation introuvable' });
+    if (inv.revoked) return res.json({ success: true });
+    inv.revoked = true;
+    inv.revokedAt = new Date();
+    await inv.save();
+    res.json({ success: true });
+  } catch (e) {
+    console.error('[reviews] revoke error:', e);
+    res.status(500).json({ success: false, message: 'Erreur serveur' });
+  }
+});
+
 // Dupliquer un modèle
 app.post('/api/admin/tasks/templates/:id/duplicate', authenticateAdmin, ensureAdminOrAgent, async (req, res) => {
   try {
@@ -186,6 +311,7 @@ module.exports.rebuildVinOrPlateInternal = rebuildVinOrPlateInternal;
 const app = express();
 const PORT = process.env.PORT || 3001;
 const WEBSITE_URL = (process.env.WEBSITE_URL && process.env.WEBSITE_URL.trim()) || `http://localhost:${PORT}`;
+const TRUSTPILOT_URL = (process.env.TRUSTPILOT_URL && process.env.TRUSTPILOT_URL.trim()) || 'https://fr.trustpilot.com/review/carpartsfrance.fr';
 const ORDERS_SYNC_ENABLED = String(process.env.ORDERS_SYNC_ENABLED || 'false').toLowerCase() === 'true';
 const ORDERS_SYNC_INTERVAL_MINUTES = parseInt(process.env.ORDERS_SYNC_INTERVAL_MINUTES || '15', 10);
 // L'application est derrière un proxy (Railway/Render)
@@ -1314,6 +1440,351 @@ for (const d of altUploadDirs) {
 }
 app.use('/admin', express.static(path.join(__dirname, '../admin')));
 app.use('/tracking', express.static(path.join(__dirname, '../tracking')));
+// Nouvelle page publique de suivi commande (distincte de la page SAV existante)
+app.use('/order-tracking', express.static(path.join(__dirname, '../order-tracking')));
+
+// --- routes publiques avis clients ---
+// Lien Oui: redirige vers Trustpilot, sauf si le jeton a été verrouillé par un clic "Non"
+app.get('/r/yes/:token', async (req, res) => {
+  try {
+    const token = String(req.params.token || '').trim();
+    if (!token) return res.redirect('/reviews/lien-invalide/');
+    const inv = await ReviewInvite.findOne({ token }).lean();
+    if (!inv) return res.redirect('/reviews/lien-invalide/');
+    if (inv.revoked) {
+      return res.redirect('/reviews/lien-invalide/');
+    }
+    if (inv.lockedByNo || inv.decision === 'no') {
+      return res.redirect('/reviews/merci-interne/');
+    }
+    // Marquer la décision "yes" si non déjà fait
+    if (!inv.clickedYesAt || inv.decision !== 'yes') {
+      await ReviewInvite.updateOne({ _id: inv._id }, { $set: { decision: 'yes', clickedYesAt: new Date() } });
+    }
+    const dest = TRUSTPILOT_URL.startsWith('http') ? TRUSTPILOT_URL : `https://${TRUSTPILOT_URL}`;
+    return res.redirect(dest);
+  } catch (e) {
+    console.error('[reviews] yes redirect error:', e);
+    return res.redirect('/reviews/lien-invalide/');
+  }
+});
+
+// Lien Non: verrouille le jeton et redirige vers la page de feedback interne
+app.get('/r/no/:token', async (req, res) => {
+  try {
+    const token = String(req.params.token || '').trim();
+    if (!token) return res.redirect('/reviews/lien-invalide/');
+    const inv = await ReviewInvite.findOne({ token }).lean();
+    if (!inv) return res.redirect('/reviews/lien-invalide/');
+    if (inv.revoked) return res.redirect('/reviews/lien-invalide/');
+    await ReviewInvite.updateOne({ _id: inv._id }, { $set: { decision: 'no', lockedByNo: true, clickedNoAt: new Date() } });
+    return res.redirect(`/reviews/feedback/?t=${encodeURIComponent(token)}`);
+  } catch (e) {
+    console.error('[reviews] no redirect error:', e);
+    return res.redirect('/reviews/lien-invalide/');
+  }
+});
+
+// Réception du feedback négatif (raison + détail)
+app.post('/api/reviews/feedback/:token', async (req, res) => {
+  try {
+    const token = String(req.params.token || '').trim();
+    const body = req.body || {};
+    const feedbackReason = String(body.reason || body.feedbackReason || '').slice(0, 200);
+    const feedbackDetails = String(body.details || body.feedbackDetails || '').slice(0, 5000);
+    const inv = await ReviewInvite.findOne({ token });
+    if (!inv) return res.status(404).json({ success: false, message: 'Lien invalide ou expiré' });
+    inv.decision = 'no';
+    inv.lockedByNo = true;
+    inv.feedbackReason = feedbackReason;
+    inv.feedbackDetails = feedbackDetails;
+    inv.feedbackSubmittedAt = new Date();
+    await inv.save();
+    try {
+      await sendNegativeReviewFeedback({ email: inv.email || '', orderNumber: inv.orderNumber || '', token, feedbackReason, feedbackDetails });
+    } catch (e) {
+      console.warn('[reviews] email feedback negative failed (non bloquant):', e && e.message ? e.message : e);
+    }
+    return res.json({ success: true });
+  } catch (e) {
+    console.error('[reviews] feedback submit error:', e);
+    return res.status(500).json({ success: false, message: 'Erreur serveur' });
+  }
+});
+
+// Création d'une invitation (admin) pour générer des liens Oui/Non (+ option envoi email)
+app.post('/api/admin/reviews/invites', adminAuthMW, async (req, res) => {
+  try {
+    const b = req.body || {};
+    const email = b.email ? String(b.email).toLowerCase().trim() : '';
+    const orderNumber = b.orderNumber ? String(b.orderNumber).trim() : '';
+    const token = crypto.randomBytes(24).toString('hex');
+    const doc = await new ReviewInvite({ token, email, orderNumber }).save();
+    const base = (WEBSITE_URL || '').replace(/\/$/, '');
+    const yesLink = `${base}/r/yes/${token}`;
+    const noLink = `${base}/r/no/${token}`;
+
+    if (b.sendEmail === true || String(b.sendEmail).toLowerCase() === 'true') {
+      const toEmail = b.toEmail ? String(b.toEmail).trim() : email;
+      if (toEmail) {
+        try { await sendReviewInviteEmail({ toEmail, yesLink, noLink }); } catch (e) { console.warn('[reviews] send invite email failed:', e && e.message ? e.message : e); }
+      }
+    }
+
+    res.json({ success: true, invite: { id: doc._id.toString(), token, email, orderNumber, yesLink, noLink } });
+  } catch (e) {
+    console.error('[reviews] create invite error:', e);
+    res.status(500).json({ success: false, message: 'Erreur serveur' });
+  }
+});
+
+// --- Historique invitations (admin) — top-level pour éviter tout 404 si dupliqué ailleurs ---
+app.get('/api/admin/reviews/invites', adminAuthMW, async (req, res) => {
+  try {
+    const q = String(req.query.q || req.query.query || '').trim();
+    const sortKey = String(req.query.sort || 'createdAt');
+    const dir = String(req.query.dir || 'desc').toLowerCase() === 'asc' ? 1 : -1;
+    const page = Math.max(parseInt(req.query.page || '1', 10) || 1, 1);
+    const pageSize = Math.min(Math.max(parseInt(req.query.pageSize || '20', 10) || 20, 1), 200);
+
+    const filter = {};
+    if (q) {
+      const re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+      filter.$or = [ { email: re }, { orderNumber: re }, { token: re } ];
+    }
+
+    const total = await ReviewInvite.countDocuments(filter);
+    const list = await ReviewInvite.find(filter)
+      .sort({ [sortKey]: dir, _id: -1 })
+      .skip((page - 1) * pageSize)
+      .limit(pageSize)
+      .lean();
+
+    const base = (WEBSITE_URL || '').replace(/\/$/, '');
+    const rows = list.map(inv => ({
+      ...inv,
+      yesLink: `${base}/r/yes/${inv.token}`,
+      noLink: `${base}/r/no/${inv.token}`
+    }));
+
+    res.json({ success: true, total, page, pageSize, invites: rows });
+  } catch (e) {
+    console.error('[reviews] list invites error:', e);
+    res.status(500).json({ success: false, message: 'Erreur serveur' });
+  }
+});
+
+app.get('/api/admin/reviews/invites/export.csv', adminAuthMW, async (req, res) => {
+  try {
+    const q = String(req.query.q || req.query.query || '').trim();
+    const sortKey = String(req.query.sort || 'createdAt');
+    const dir = String(req.query.dir || 'desc').toLowerCase() === 'asc' ? 1 : -1;
+    const filter = {};
+    if (q) {
+      const re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+      filter.$or = [ { email: re }, { orderNumber: re }, { token: re } ];
+    }
+    const list = await ReviewInvite.find(filter).sort({ [sortKey]: dir, _id: -1 }).lean();
+    const base = (WEBSITE_URL || '').replace(/\/$/, '');
+    const lines = [];
+    lines.push(['createdAt','email','orderNumber','token','yesLink','noLink','decision','clickedYesAt','clickedNoAt','lockedByNo','revoked','revokedAt','feedbackReason'].join(','));
+    for (const inv of list) {
+      const yesLink = `${base}/r/yes/${inv.token}`;
+      const noLink = `${base}/r/no/${inv.token}`;
+      const cells = [
+        inv.createdAt ? new Date(inv.createdAt).toISOString() : '',
+        inv.email || '',
+        inv.orderNumber || '',
+        inv.token || '',
+        yesLink,
+        noLink,
+        inv.decision || '',
+        inv.clickedYesAt ? new Date(inv.clickedYesAt).toISOString() : '',
+        inv.clickedNoAt ? new Date(inv.clickedNoAt).toISOString() : '',
+        inv.lockedByNo ? 'true' : 'false',
+        inv.revoked ? 'true' : 'false',
+        inv.revokedAt ? new Date(inv.revokedAt).toISOString() : '',
+        (inv.feedbackReason || '').replace(/[\r\n,]/g, ' ')
+      ];
+      lines.push(cells.map(v => typeof v === 'string' && v.includes(',') ? '"' + v.replace(/"/g, '""') + '"' : v).join(','));
+    }
+    const csv = lines.join('\n');
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="review-invites.csv"');
+    res.send(csv);
+  } catch (e) {
+    console.error('[reviews] export csv error:', e);
+    res.status(500).send('Erreur serveur');
+  }
+});
+
+app.post('/api/admin/reviews/invites/:id/resend', adminAuthMW, async (req, res) => {
+  try {
+    const id = String(req.params.id || '').trim();
+    const inv = await ReviewInvite.findById(id).lean();
+    if (!inv) return res.status(404).json({ success: false, message: 'Invitation introuvable' });
+    if (inv.revoked) return res.status(400).json({ success: false, message: 'Invitation révoquée' });
+    const base = (WEBSITE_URL || '').replace(/\/$/, '');
+    const yesLink = `${base}/r/yes/${inv.token}`;
+    const noLink = `${base}/r/no/${inv.token}`;
+    const toEmail = String(req.body?.toEmail || inv.email || '').trim();
+    if (!toEmail) return res.status(400).json({ success: false, message: 'Email destinataire requis' });
+    try { await sendReviewInviteEmail({ toEmail, yesLink, noLink }); } catch (e) { console.warn('[reviews] resend email failed:', e?.message || e); }
+    res.json({ success: true });
+  } catch (e) {
+    console.error('[reviews] resend error:', e);
+    res.status(500).json({ success: false, message: 'Erreur serveur' });
+  }
+});
+
+app.post('/api/admin/reviews/invites/:id/revoke', adminAuthMW, async (req, res) => {
+  try {
+    const id = String(req.params.id || '').trim();
+    const inv = await ReviewInvite.findById(id);
+    if (!inv) return res.status(404).json({ success: false, message: 'Invitation introuvable' });
+    if (inv.revoked) return res.json({ success: true });
+    inv.revoked = true;
+    inv.revokedAt = new Date();
+    await inv.save();
+    res.json({ success: true });
+  } catch (e) {
+    console.error('[reviews] revoke error:', e);
+    res.status(500).json({ success: false, message: 'Erreur serveur' });
+  }
+});
+app.get('/api/track/order', async (req, res) => {
+  try {
+    const orderNumber = String(req.query.orderNumber || '').trim();
+    const trackingNumber = String(req.query.trackingNumber || '').trim();
+
+    if (!orderNumber && !trackingNumber) {
+      return res.status(400).json({ success: false, message: 'Merci de fournir un numéro de commande ou un numéro de suivi.' });
+    }
+
+    const filter = {};
+    if (orderNumber) filter.number = orderNumber;
+    if (trackingNumber) filter['shipping.trackingNumber'] = trackingNumber;
+
+    const order = await Order.findOne(filter).lean();
+    if (!order) {
+      return res.status(404).json({ success: false, message: 'Commande introuvable. Vérifiez les informations fournies.' });
+    }
+
+    // Si la recherche se fait uniquement via le numéro de commande mais qu'un numéro de suivi existe, vérifier la cohérence
+    if (orderNumber && trackingNumber && order?.shipping?.trackingNumber && order.shipping.trackingNumber !== trackingNumber) {
+      return res.status(400).json({ success: false, message: 'Le numéro de suivi ne correspond pas à cette commande.' });
+    }
+
+    const updates = Array.isArray(order.events)
+      ? order.events
+          .map(ev => ({
+            at: ev.at ? new Date(ev.at) : null,
+            type: ev.type || '',
+            message: ev.message || '',
+            payloadSnippet: ev.payloadSnippet || {}
+          }))
+          .sort((a, b) => {
+            const aTime = a.at ? a.at.getTime() : 0;
+            const bTime = b.at ? b.at.getTime() : 0;
+            return aTime - bTime;
+          })
+      : [];
+
+    // Ne garder que les événements pertinents pour le suivi colis
+    const ALLOWED_EVENT_TYPES = new Set([
+      'order_shipped',            // expédition avec transporteur + tracking
+      'estimated_delivery_set'    // date de livraison estimée
+      // 'tracking_added', 'tracking_updated' // (si ajoutés à l'avenir)
+    ]);
+    const filteredUpdates = updates.filter(ev => ALLOWED_EVENT_TYPES.has(String(ev.type || '').toLowerCase()));
+
+    res.json({
+      success: true,
+      order: {
+        number: order.number || '',
+        provider: order.provider || 'manual',
+        status: order.status || 'processing',
+        createdAt: order.createdAt,
+        updatedAt: order.updatedAt,
+        customer: {
+          name: order?.customer?.name || '',
+          email: order?.customer?.email || '',
+          phone: order?.customer?.phone || ''
+        },
+        shipping: {
+          carrier: order?.shipping?.carrier || '',
+          trackingNumber: order?.shipping?.trackingNumber || '',
+          shippedAt: order?.shipping?.shippedAt || null,
+          estimatedDeliveryAt: order?.shipping?.estimatedDeliveryAt || null,
+          address: order?.shipping?.address || {}
+        },
+        items: Array.isArray(order.items) ? order.items.map(item => ({
+          sku: item.sku,
+          name: item.name,
+          qty: item.qty,
+          unitPrice: item.unitPrice
+        })) : []
+      },
+      events: filteredUpdates.map(ev => ({
+        at: ev.at ? ev.at.toISOString() : null,
+        type: ev.type,
+        message: ev.message,
+        payload: ev.payloadSnippet || {}
+      }))
+    });
+  } catch (e) {
+    console.error('[public-track] erreur', e);
+    res.status(500).json({ success: false, message: 'Erreur interne, veuillez réessayer plus tard.' });
+  }
+});
+
+app.post('/api/track/order/contact', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const orderNumber = String(body.orderNumber || '').trim();
+    const trackingNumber = String(body.trackingNumber || '').trim();
+    const message = String(body.message || '').trim();
+    const email = String(body.email || '').trim();
+
+    if (!orderNumber && !trackingNumber) {
+      return res.status(400).json({ success: false, message: 'Numéro de commande ou de suivi requis.' });
+    }
+    if (!message) {
+      return res.status(400).json({ success: false, message: 'Merci de nous indiquer votre message.' });
+    }
+
+    const filter = {};
+    if (orderNumber) filter.number = orderNumber;
+    if (trackingNumber) filter['shipping.trackingNumber'] = trackingNumber;
+
+    const order = await Order.findOne(filter);
+    if (!order) {
+      return res.status(404).json({ success: false, message: 'Commande introuvable.' });
+    }
+
+    const note = `Contact client via page suivi: ${message}${email ? ` (email: ${email})` : ''}`;
+    order.events = order.events || [];
+    order.events.push({ type: 'client_contact', message: note, at: new Date(), payloadSnippet: { source: 'tracking-page' } });
+    await order.save();
+
+    try {
+      console.log('[public-track] contact reçu', {
+        order: order.number || String(order._id),
+        tracking: (order && order.shipping && order.shipping.trackingNumber) ? order.shipping.trackingNumber : null,
+        email,
+        messageLength: message.length
+      });
+      // TODO: Intégrer un envoi d'email interne (support) si nécessaire.
+    } catch (err) {
+      console.warn('[public-track] log contact impossible', err && err.message ? err.message : err);
+    }
+
+    res.json({ success: true, message: 'Votre message a bien été transmis à notre équipe. Merci.' });
+  } catch (e) {
+    console.error('[public-track:contact] erreur', e);
+    res.status(500).json({ success: false, message: 'Erreur interne, veuillez réessayer plus tard.' });
+  }
+});
 
 // Health check (statut et DB)
 app.get('/healthz', (req, res) => {

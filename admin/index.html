@@ -25,6 +25,7 @@
                         <li><a href="#tasks"><i class="fas fa-tasks"></i> Tâches</a></li>
                         <li><a href="#docs"><i class="fas fa-book"></i> Documentation</a></li>
                         <li><a href="#settings"><i class="fas fa-cog"></i> Paramètres</a></li>
+                        <li><a href="/admin/reviews/"><i class="fas fa-star"></i> Avis</a></li>
                     </ul>
                 </nav>
             </div>
@@ -355,7 +356,8 @@
                                 <button id="orders-sync-btn" class="btn-secondary" title="Synchroniser WooCommerce & Mollie"><i class="fas fa-cloud-download-alt"></i></button>
                                 <button id="orders-sync-woo-all-btn" class="btn-secondary" title="Importer toutes les commandes WooCommerce"><i class="fas fa-database"></i></button>
                                 <button id="orders-rebuild-techref-btn" class="btn-secondary" title="Recalculer les références techniques manquantes"><i class="fas fa-wrench"></i></button>
-                            </div>
+                                <button id="orders-invite-review-btn" class="btn-secondary" title="Inviter à laisser un avis"><i class="fas fa-star"></i></button>
+                             </div>
                         </div>
 
                         <div class="orders-metrics" id="orders-metrics">
@@ -1364,5 +1366,40 @@
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <script src="admin.js?v=20251001-2"></script>
     <script src="kanban.js?v=20250809-1"></script>
+    <script>
+      // Bouton rapide: "Inviter à laisser un avis" depuis la vue Commandes
+      (function(){
+        function getAuthToken(){ try { return window.authToken || localStorage.getItem('authToken') || ''; } catch(_){ return ''; } }
+        async function fetchOrder(orderId){
+          const token = getAuthToken();
+          if (!token || !orderId) return null;
+          try {
+            const res = await fetch(`/api/admin/orders/${encodeURIComponent(orderId)}`, { headers: { 'Authorization': `Basic ${token}` } });
+            if (!res.ok) return null;
+            return await res.json().catch(()=>null);
+          } catch { return null; }
+        }
+        async function onInviteClick(){
+          try {
+            const orderId = (window.resolveCurrentOrderId && window.resolveCurrentOrderId()) || '';
+            if (!orderId){ alert('Sélectionnez d\'abord une commande.'); return; }
+            const data = await fetchOrder(orderId);
+            const email = data && data.customer && data.customer.email ? data.customer.email.trim() : '';
+            const orderNumber = data && data.number ? String(data.number).trim() : '';
+            const qs = new URLSearchParams();
+            if (email) qs.set('email', email);
+            if (orderNumber) qs.set('orderNumber', orderNumber);
+            window.location.href = '/admin/reviews/' + (qs.toString() ? ('?' + qs.toString()) : '');
+          } catch(e) {
+            alert('Impossible de pré-remplir. Vous pouvez ouvrir l\'onglet Avis et saisir manuellement.');
+          }
+        }
+        function init(){
+          const btn = document.getElementById('orders-invite-review-btn');
+          if (btn) btn.addEventListener('click', onInviteClick);
+        }
+        if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
+      })();
+    </script>
 </body>
 </html>

@@ -38,6 +38,100 @@ const transportOptions = {
 };
 
 /**
+ * Envoie un email demandant au client s'il est satisfait (Oui/Non)
+ * Oui => lien Trustpilot ; Non => lien interne feedback
+ * @param {Object} p
+ * @param {string} p.toEmail
+ * @param {string} p.yesLink
+ * @param {string} p.noLink
+ */
+const sendReviewInviteEmail = async ({ toEmail, yesLink, noLink }) => {
+  const to = String(toEmail || '').trim();
+  if (!to || !yesLink || !noLink) return null;
+  const subject = 'Êtes-vous satisfait de votre prestation ?';
+  const htmlContent = `
+    <div style="font-family: Arial, sans-serif; background:#f5f6f8; padding:24px 0;">
+      <!-- Preheader -->
+      <div style="display:none; max-height:0; overflow:hidden; color:transparent; opacity:0;">Votre avis nous aide à améliorer nos services.</div>
+
+      <table role="presentation" width="100%" border="0" cellspacing="0" cellpadding="0">
+        <tr>
+          <td align="center">
+            <table role="presentation" width="640" border="0" cellspacing="0" cellpadding="0" style="width:640px; max-width:100%; background:#ffffff; border:1px solid #e6e7eb; border-radius:14px; box-shadow:0 12px 28px rgba(34,34,34,0.06);">
+              <!-- Brand header -->
+              <tr>
+                <td style="padding:18px 20px; border-bottom:1px solid #eef0f2;">
+                  <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+                    <tr>
+                      <td align="left" style="vertical-align:middle;">
+                        <img src="${baseUrl}/logo.png" alt="Car Parts France" width="120" style="display:block; height:auto; border:0; outline:none; text-decoration:none;">
+                      </td>
+                      <td align="right" style="vertical-align:middle;">
+                        <span style="display:inline-block; padding:6px 10px; border:1px solid #e6e7eb; border-radius:999px; color:#1f2937; font-weight:600; font-size:12px;">Demande d'avis</span>
+                      </td>
+                    </tr>
+                  </table>
+                </td>
+              </tr>
+
+              <!-- Title / Intro -->
+              <tr>
+                <td style="padding:26px 24px 10px 24px;">
+                  <h1 style="margin:0; font-size:20px; line-height:1.4; color:#111827;">Nous avons besoin de votre avis</h1>
+                  <p style="margin:8px 0 0; color:#4b5563; font-size:14px; line-height:1.6;">
+                    Bonjour,<br>
+                    Votre satisfaction est essentielle pour nous. En quelques secondes, dites-nous simplement si tout s’est bien passé ou si quelque chose mérite notre attention.
+                  </p>
+                </td>
+              </tr>
+
+              <!-- CTA buttons -->
+              <tr>
+                <td align="center" style="padding:18px 24px 6px 24px;">
+                  <table role="presentation" cellspacing="0" cellpadding="0" style="margin:auto;">
+                    <tr>
+                      <td style="padding:0 6px 12px 6px;">
+                        <a href="${yesLink}" style="display:inline-block; background:#16a34a; color:#ffffff; text-decoration:none; font-weight:700; font-size:14px; padding:12px 18px; border-radius:10px;">Je suis satisfait</a>
+                      </td>
+                      <td style="padding:0 6px 12px 6px;">
+                        <a href="${noLink}" style="display:inline-block; background:#e30613; color:#ffffff; text-decoration:none; font-weight:700; font-size:14px; padding:12px 18px; border-radius:10px;">Je ne suis pas satisfait</a>
+                      </td>
+                    </tr>
+                  </table>
+                </td>
+              </tr>
+
+              <!-- Info text (neutre) -->
+              <tr>
+                <td style="padding:4px 24px 20px 24px;">
+                  <p style="margin:0; color:#6b7280; font-size:12px; line-height:1.6;">Merci d’avance pour votre retour.</p>
+                </td>
+              </tr>
+
+            </table>
+          </td>
+        </tr>
+      </table>
+    </div>
+  `;
+  const textContent = `Nous avons besoin de votre avis.\n\nJe suis satisfait : ${yesLink}\nJe ne suis pas satisfait : ${noLink}`;
+  const mailOptions = {
+    from: process.env.EMAIL_FROM || 'sav@carpartsfrance.fr',
+    to,
+    subject,
+    html: htmlContent,
+    text: textContent,
+    replyTo: process.env.EMAIL_REPLY_TO || 'sav@carpartsfrance.fr'
+  };
+  try {
+    return await safeSendMail(mailOptions);
+  } catch (e) {
+    console.error('[emailService] sendReviewInviteEmail error:', e);
+    return null;
+  }
+};
+
+/**
  * Notifie l'utilisateur assigné qu'un ticket lui a été attribué
  * @param {Object} ticket - Le ticket complet
  * @param {Object} assignedUser - L'utilisateur assigné (email requis)
@@ -203,6 +297,71 @@ const sendSlaReminderEmail = async (ticket, assignedUser, hoursLate = 20) => {
     return await safeSendMail(mailOptions);
   } catch (e) {
     console.error('[emailService] sendSlaReminderEmail error:', e);
+    return null;
+  }
+};
+
+/**
+ * Notifie l'équipe interne lorsqu'un client indique qu'il n'est pas satisfait
+ * et soumet un feedback via la page dédiée (flux avis clients Oui/Non).
+ * @param {Object} params
+ * @param {string} params.email - Email du client (optionnel)
+ * @param {string} params.orderNumber - Numéro de commande (optionnel)
+ * @param {string} params.token - Jeton d'invitation (optionnel)
+ * @param {string} params.feedbackReason - Motif synthétique
+ * @param {string} params.feedbackDetails - Détails fournis par le client
+ */
+const sendNegativeReviewFeedback = async ({ email = '', orderNumber = '', token = '', feedbackReason = '', feedbackDetails = '' }) => {
+  const to = (process.env.SUPPORT_TEAM_EMAIL || process.env.EMAIL_USER || 'sav@carpartsfrance.fr');
+  const subject = `Retour insatisfait client${orderNumber ? ` - Commande ${orderNumber}` : ''}`;
+  const safeReason = String(feedbackReason || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const safeDetailsHtml = String(feedbackDetails || '').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br/>');
+  const tokenPart = token ? `<p style="color:#666;font-size:12px;margin-top:8px">Token: ${token}</p>` : '';
+  const emailPart = email ? `<li>Email client: ${email}</li>` : '';
+  const orderPart = orderNumber ? `<li>Commande: ${orderNumber}</li>` : '';
+
+  const htmlContent = `
+    <div style="font-family: Arial, sans-serif; max-width: 640px; margin: 0 auto;">
+      <div style="background-color: #b91c1c; color: white; padding: 16px; text-align: center;">
+        <h2>Retour insatisfait (avis)</h2>
+      </div>
+      <div style="padding: 16px; border: 1px solid #eee;">
+        <p>Un client a indiqué ne pas être satisfait et a envoyé un feedback via le formulaire interne.</p>
+        <ul>
+          ${emailPart}
+          ${orderPart}
+          <li>Motif: <strong>${safeReason || '-'}</strong></li>
+        </ul>
+        <div style="margin-top:12px;">
+          <div style="font-weight:600;margin-bottom:6px;">Détails:</div>
+          <div style="white-space:normal;line-height:1.45;">${safeDetailsHtml || '-'}</div>
+        </div>
+        ${tokenPart}
+        <div style="margin-top:16px; text-align:center;">
+          <a href="${baseUrl}/tracking/" style="background-color:#003366;color:#fff;padding:10px 16px;text-decoration:none;border-radius:4px;">Ouvrir l'outil</a>
+        </div>
+      </div>
+    </div>
+  `;
+  const textContent = `Retour insatisfait client${orderNumber ? ` - Commande ${orderNumber}` : ''}
+Email: ${email || '-'}
+Motif: ${feedbackReason || '-'}
+Détails: ${feedbackDetails || '-'}
+Token: ${token || '-'}
+`;
+
+  const mailOptions = {
+    from: process.env.EMAIL_FROM || 'sav@carpartsfrance.fr',
+    to,
+    subject,
+    html: htmlContent,
+    text: textContent,
+    replyTo: process.env.EMAIL_REPLY_TO || 'sav@carpartsfrance.fr'
+  };
+  try {
+    return await safeSendMail(mailOptions);
+  } catch (e) {
+    console.error('[emailService] sendNegativeReviewFeedback error:', e);
     return null;
   }
 };
@@ -640,5 +799,7 @@ module.exports = {
   sendAssistanceRequestEmail,
   sendEscalationEmail,
   sendSlaReminderEmail,
-  sendPasswordResetEmail
+  sendPasswordResetEmail,
+  sendNegativeReviewFeedback,
+  sendReviewInviteEmail
 };
