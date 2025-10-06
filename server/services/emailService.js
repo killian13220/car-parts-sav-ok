@@ -80,6 +80,7 @@ const sendReviewInviteEmail = async ({ toEmail, yesLink, noLink }) => {
                   <h1 style="margin:0; font-size:20px; line-height:1.4; color:#111827;">Nous avons besoin de votre avis</h1>
                   <p style="margin:8px 0 0; color:#4b5563; font-size:14px; line-height:1.6;">
                     Bonjour,<br>
+                    Vous avez commandé chez nous une pièce automobile récemment.<br>
                     Votre satisfaction est essentielle pour nous. En quelques secondes, dites-nous simplement si tout s’est bien passé ou si quelque chose mérite notre attention.
                   </p>
                 </td>
@@ -114,7 +115,7 @@ const sendReviewInviteEmail = async ({ toEmail, yesLink, noLink }) => {
       </table>
     </div>
   `;
-  const textContent = `Nous avons besoin de votre avis.\n\nJe suis satisfait : ${yesLink}\nJe ne suis pas satisfait : ${noLink}`;
+  const textContent = `Vous avez commandé chez nous une pièce automobile récemment.\nNous avons besoin de votre avis.\n\nJe suis satisfait : ${yesLink}\nJe ne suis pas satisfait : ${noLink}`;
   const mailOptions = {
     from: process.env.EMAIL_FROM || 'sav@carpartsfrance.fr',
     to,

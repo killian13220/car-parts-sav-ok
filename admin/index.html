@@ -458,6 +458,7 @@
                                 <div class="orders-bulk-actions" id="orders-bulk-actions" style="display:none;align-items:center;gap:8px;margin-bottom:8px;">
                                     <span id="orders-bulk-count">0 sélectionnée(s)</span>
                                     <button id="orders-bulk-delete" class="btn-secondary"><i class="fas fa-trash"></i> Supprimer la sélection</button>
+                                    <button id="orders-bulk-invite" class="btn-secondary"><i class="fas fa-star"></i> Envoyer invitations avis</button>
                                 </div>
                                 <table class="orders-table">
                                     <thead>
@@ -1401,5 +1402,94 @@
         if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
       })();
     </script>
-</body>
+    <script>
+      // Sélection multiple + envoi d'invitations d'avis (bulk) côté Commandes
+      (function(){
+        function getAuthToken(){ try { return window.authToken || localStorage.getItem('authToken') || ''; } catch(_){ return ''; } }
+        function q(sel, root){ return (root||document).querySelector(sel); }
+        function qa(sel, root){ return Array.from((root||document).querySelectorAll(sel)); }
+
+        function getSelectedOrderIds(){
+          return qa('input.order-select:checked').map(cb => cb.getAttribute('data-id')).filter(Boolean);
+        }
+
+        function updateBulkUI(){
+          const ids = getSelectedOrderIds();
+          const bar = q('#orders-bulk-actions');
+          const count = q('#orders-bulk-count');
+          if (bar) bar.style.display = ids.length ? 'flex' : 'none';
+          if (count) count.textContent = ids.length + ' sélectionnée(s)';
+          // maj état du select-all
+          const all = q('#orders-select-all');
+          const allBoxes = qa('input.order-select');
+          if (all) {
+            if (!allBoxes.length) { all.checked = false; all.indeterminate = false; }
+            else {
+              const sel = ids.length;
+              all.checked = sel && sel === allBoxes.length;
+              all.indeterminate = sel > 0 && sel < allBoxes.length;
+            }
+          }
+        }
+
+        function onSelectAllChange(e){
+          const checked = !!e.target.checked;
+          qa('input.order-select').forEach(cb => { cb.checked = checked; });
+          updateBulkUI();
+        }
+
+        function onOrdersListChange(e){
+          const t = e.target;
+          if (t && t.matches && t.matches('input.order-select')) {
+            updateBulkUI();
+          }
+        }
+
+        async function sendBulkInvites(){
+          const ids = getSelectedOrderIds();
+          if (!ids.length) { alert('Sélectionnez au moins une commande.'); return; }
+          const sendEmail = window.confirm('Envoyer les invitations par email automatiquement ?\nCliquez sur Annuler pour seulement générer les liens dans l\'onglet Avis.');
+          const token = getAuthToken();
+          if (!token) { alert('Veuillez vous reconnecter.'); return; }
+          try {
+            const res = await fetch('/api/admin/reviews/invites/bulk', {
+              method: 'POST',
+              headers: { 'Authorization': `Basic ${token}`, 'Content-Type': 'application/json' },
+              body: JSON.stringify({ orderIds: ids, sendEmail })
+            });
+            const data = await res.json().catch(() => ({ success:false, message:'Réponse invalide' }));
+            if (!res.ok || !data.success) { throw new Error(data.message || 'Échec de la création des invitations'); }
+            const created = Number(data.created || 0);
+            const processed = Number(data.processed || 0);
+            const total = Number(data.total || ids.length);
+            const failed = Math.max(processed - created, 0);
+            alert(`Invitations créées: ${created}/${total}` + (failed ? `\nÉchecs: ${failed}` : '') + (sendEmail ? '' : '\nAstuce: consultez /admin/reviews pour copier les liens.'));
+            // Optionnel: rafraîchir la vue commandes ou ouvrir l'onglet Avis
+          } catch(e) {
+            alert(e && e.message ? e.message : 'Erreur lors de l\'envoi en lot');
+          }
+        }
+
+        function observeOrdersList(){
+          const list = q('#orders-list');
+          if (!list || !window.MutationObserver) return;
+          const obs = new MutationObserver(() => { updateBulkUI(); });
+          obs.observe(list, { childList: true, subtree: true });
+        }
+
+        function initBulk(){
+          const selectAll = q('#orders-select-all');
+          if (selectAll) selectAll.addEventListener('change', onSelectAllChange);
+          const list = q('#orders-list');
+          if (list) list.addEventListener('change', onOrdersListChange);
+          const bulkBtn = q('#orders-bulk-invite');
+          if (bulkBtn) bulkBtn.addEventListener('click', sendBulkInvites);
+          observeOrdersList();
+          updateBulkUI();
+        }
+
+        if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initBulk); else initBulk();
+      })();
+    </script>
+  </body>
 </html>

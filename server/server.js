@@ -1538,6 +1538,40 @@ app.post('/api/admin/reviews/invites', adminAuthMW, async (req, res) => {
   }
 });
 
+// Création en lot d'invitations (à partir d'une sélection de commandes) + option envoi d'email
+app.post('/api/admin/reviews/invites/bulk', adminAuthMW, async (req, res) => {
+  try {
+    const ids = Array.isArray(req.body?.orderIds) ? req.body.orderIds : [];
+    const sendEmail = (req.body?.sendEmail === true) || (String(req.body?.sendEmail).toLowerCase() === 'true');
+    if (!ids.length) return res.status(400).json({ success: false, message: 'orderIds requis' });
+    const limit = Math.min(ids.length, 50); // sécurité: limiter par requête
+    const base = (WEBSITE_URL || '').replace(/\/$/, '');
+    const results = [];
+    for (const id of ids.slice(0, limit)) {
+      try {
+        const order = await Order.findById(id).lean();
+        if (!order) { results.push({ id, ok: false, error: 'order_not_found' }); continue; }
+        const email = (order.customer && order.customer.email) ? String(order.customer.email).trim() : '';
+        const orderNumber = order.number ? String(order.number).trim() : '';
+        const token = crypto.randomBytes(24).toString('hex');
+        await new ReviewInvite({ token, email, orderNumber }).save();
+        const yesLink = `${base}/r/yes/${token}`;
+        const noLink = `${base}/r/no/${token}`;
+        if (sendEmail && email) {
+          try { await sendReviewInviteEmail({ toEmail: email, yesLink, noLink }); } catch (e) { console.warn('[reviews] bulk send failed (non bloquant):', e && e.message ? e.message : e); }
+        }
+        results.push({ id, ok: true, email, orderNumber, yesLink, noLink });
+      } catch (e) {
+        results.push({ id, ok: false, error: e && e.message ? e.message : String(e) });
+      }
+    }
+    return res.json({ success: true, total: ids.length, processed: results.length, created: results.filter(r => r.ok).length, results });
+  } catch (e) {
+    console.error('[reviews] bulk invites error:', e);
+    return res.status(500).json({ success: false, message: 'Erreur serveur' });
+  }
+});
+
 // --- Historique invitations (admin) — top-level pour éviter tout 404 si dupliqué ailleurs ---
 app.get('/api/admin/reviews/invites', adminAuthMW, async (req, res) => {
   try {
