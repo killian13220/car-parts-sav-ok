@@ -3853,6 +3853,7 @@ app.get('/api/admin/orders', authenticateAdmin, ensureAdminOrAgent, async (req, 
     const from = String(req.query.from || '').trim();
     const to = String(req.query.to || '').trim();
     const sortBy = String(req.query.sort || '').trim() || 'date';
+    const reviewDecision = String(req.query.reviewDecision || '').trim();
     const missingTechRef = String(req.query.missingTechRef || '').trim().toLowerCase();
     const dir = (String(req.query.dir || '').trim().toLowerCase() === 'asc') ? 1 : -1;
 
@@ -3892,6 +3893,36 @@ app.get('/api/admin/orders', authenticateAdmin, ensureAdminOrAgent, async (req, 
           }
         ]
       });
+    }
+    // Filtre sur les invitations d'avis (clic Oui/Non)
+    if (reviewDecision) {
+      try {
+        if (reviewDecision === 'none') {
+          // Exclure toutes les commandes liées à un clic Oui/Non
+          const invs = await ReviewInvite.find({ decision: { $in: ['yes','no'] } }, { orderNumber:1, email:1 }).lean();
+          const onums = Array.from(new Set(invs.map(i => i.orderNumber).filter(Boolean)));
+          const emails = Array.from(new Set(invs.map(i => i.email).filter(Boolean)));
+          filter.$and = filter.$and || [];
+          filter.$and.push({
+            $and: [
+              { number: { $nin: onums.length ? onums : ['__none__'] } },
+              { 'customer.email': { $nin: emails.length ? emails : ['__none__'] } }
+            ]
+          });
+        } else {
+          const dec = (reviewDecision === 'any') ? { $in: ['yes','no'] } : reviewDecision;
+          const invs = await ReviewInvite.find({ decision: dec }, { orderNumber:1, email:1 }).lean();
+          const onums = Array.from(new Set(invs.map(i => i.orderNumber).filter(Boolean)));
+          const emails = Array.from(new Set(invs.map(i => i.email).filter(Boolean)));
+          const ors = [];
+          if (onums.length) ors.push({ number: { $in: onums } });
+          if (emails.length) ors.push({ 'customer.email': { $in: emails } });
+          filter.$and = filter.$and || [];
+          filter.$and.push(ors.length ? { $or: ors } : { _id: { $in: [] } });
+        }
+      } catch (e) {
+        console.warn('[orders] reviewDecision filter error:', e && e.message ? e.message : e);
+      }
     }
     // Filtre période (sur updatedAt)
     if (from || to) {

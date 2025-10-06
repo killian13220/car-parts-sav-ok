@@ -109,13 +109,23 @@ const sendReviewInviteEmail = async ({ toEmail, yesLink, noLink }) => {
                 </td>
               </tr>
 
+              <!-- Incentive neutre: bon d'achat -->
+              <tr>
+                <td style="padding:0 24px 20px 24px;">
+                  <div style="margin-top:6px; padding:12px 14px; border:1px dashed #e5e7eb; border-radius:12px; background:#fff5f5;">
+                    <strong style="display:block; color:#e30613; font-size:14px; margin-bottom:4px;">Bon d’achat de 40€</strong>
+                    <p style="margin:0; color:#4b5563; font-size:12px; line-height:1.6;">Après avoir laissé votre retour, vous recevrez un bon d’achat de 40€ à utiliser sur votre prochaine commande. Cette offre s’applique à tout retour, qu’il soit positif ou négatif.</p>
+                  </div>
+                </td>
+              </tr>
+
             </table>
           </td>
         </tr>
       </table>
     </div>
   `;
-  const textContent = `Vous avez commandé chez nous une pièce automobile récemment.\nNous avons besoin de votre avis.\n\nJe suis satisfait : ${yesLink}\nJe ne suis pas satisfait : ${noLink}`;
+  const textContent = `Vous avez commandé chez nous une pièce automobile récemment.\nNous avons besoin de votre avis.\n\nJe suis satisfait : ${yesLink}\nJe ne suis pas satisfait : ${noLink}\n\nBonus: 40€ de bon d'achat après votre retour (positif ou négatif), à utiliser sur votre prochaine commande.`;
   const mailOptions = {
     from: process.env.EMAIL_FROM || 'sav@carpartsfrance.fr',
     to,

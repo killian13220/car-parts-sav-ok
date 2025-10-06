@@ -4487,6 +4487,7 @@ async function checkAuth() {
             const provider = (document.getElementById('orders-provider-filter')?.value || '').trim();
             const status = (document.getElementById('orders-status-filter')?.value || '').trim();
             const productType = (document.getElementById('orders-type-filter')?.value || '').trim();
+            const reviewDecision = (document.getElementById('orders-review-filter')?.value || '').trim();
             const from = (document.getElementById('orders-from')?.value || '').trim();
             const to = (document.getElementById('orders-to')?.value || '').trim();
             const sortVal = (document.getElementById('orders-sort')?.value || 'date_desc');
@@ -4498,6 +4499,7 @@ async function checkAuth() {
             if (provider) params.set('provider', provider);
             if (status) params.set('status', status);
             if (productType) params.set('productType', productType);
+            if (reviewDecision) params.set('reviewDecision', reviewDecision);
             if (from) params.set('from', from);
             if (to) params.set('to', to);
             const missingRefCbx = document.getElementById('orders-missing-techref');

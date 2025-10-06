@@ -415,11 +415,18 @@
                                 </select>
                                 <select id="orders-type-filter" aria-label="Filtrer par type de produit">
                                     <option value="">Tous types</option>
-                                    <option value="mecatronique_tcu">Mécatronique/TCU</option>
+                                    <option value="mecatronique_tcu">Mécatronique / TCU</option>
                                     <option value="pont">Pont</option>
                                     <option value="boite_transfert">Boîte de transfert</option>
                                     <option value="moteur">Moteur</option>
                                     <option value="autres">Autres</option>
+                                </select>
+                                <select id="orders-review-filter" aria-label="Filtrer par avis (clics sur invitation)">
+                                    <option value="">Avis (tous)</option>
+                                    <option value="any">A cliqué (Oui/Non)</option>
+                                    <option value="yes">Oui</option>
+                                    <option value="no">Non</option>
+                                    <option value="none">Aucun clic</option>
                                 </select>
                                 <input type="date" id="orders-from" aria-label="Filtrer à partir du" title="Filtrer à partir du">
                                 <input type="date" id="orders-to" aria-label="Filtrer jusqu'au" title="Filtrer jusqu'au">
@@ -1398,6 +1405,22 @@
         function init(){
           const btn = document.getElementById('orders-invite-review-btn');
           if (btn) btn.addEventListener('click', onInviteClick);
+        }
+        if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
+      })();
+    </script>
+    <script>
+      // Déclenche l'actualisation des commandes quand le filtre Avis change
+      (function(){
+        function q(id){ return document.getElementById(id); }
+        function init(){
+          const sel = q('orders-review-filter');
+          const refresh = q('orders-refresh-btn');
+          if (sel && refresh) {
+            sel.addEventListener('change', () => {
+              try { refresh.click(); } catch(_) {}
+            });
+          }
         }
         if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
       })();
