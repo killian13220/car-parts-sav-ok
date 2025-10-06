@@ -48,7 +48,7 @@ const transportOptions = {
 const sendReviewInviteEmail = async ({ toEmail, yesLink, noLink }) => {
   const to = String(toEmail || '').trim();
   if (!to || !yesLink || !noLink) return null;
-  const subject = 'Êtes-vous satisfait de votre prestation ?';
+  const subject = 'Votre avis compte – recevez 40 € de bon d\'achat';
   const htmlContent = `
     <div style="font-family: Arial, sans-serif; background:#f5f6f8; padding:24px 0;">
       <!-- Preheader -->
