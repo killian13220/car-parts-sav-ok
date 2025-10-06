@@ -124,7 +124,20 @@ const sendReviewInviteEmail = async ({ toEmail, yesLink, noLink }) => {
     replyTo: process.env.EMAIL_REPLY_TO || 'sav@carpartsfrance.fr'
   };
   try {
-    return await safeSendMail(mailOptions);
+    const info = await safeSendMail(mailOptions);
+    try {
+      const transportType = process.env.MAILERSEND_API_KEY ? 'mailerSend-or-smtp-fallback' : 'smtp';
+      const accepted = info && (info.accepted || info.response || info.messageId);
+      const rejected = info && info.rejected;
+      console.log('[emailService] sendReviewInviteEmail delivered', {
+        to,
+        from: mailOptions.from,
+        transport: transportType,
+        accepted,
+        rejected
+      });
+    } catch(_) {}
+    return info;
   } catch (e) {
     console.error('[emailService] sendReviewInviteEmail error:', e);
     return null;
