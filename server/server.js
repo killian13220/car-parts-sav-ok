@@ -79,6 +79,7 @@ const { sendStatusUpdateEmail, sendTicketCreationEmail, sendAssignmentEmail, sen
 const setupStatsRoutes = require('./stats-api');
 const { authenticateAdmin: adminAuthMW } = require('./middleware/auth');
 const { startSlaWatcher } = require('./jobs/slaWatcher');
+const { startDeliveryWatcher } = require('./jobs/deliveryWatcher');
 require('dotenv').config();
 const { isS3Enabled, uploadBuffer, streamToResponse } = require('./services/storage');
 const { getCarrierTrackingEvents, getCarrierPublicLink } = require('./services/carrierTracking');
@@ -339,6 +340,14 @@ mongoose.connection.once('open', () => {
       })
       .catch((e) => console.warn('[ptype] Rétroactif: erreur non bloquante', e?.message || e));
   } catch(_) {}
+  // Normaliser: toute commande avec un numéro de suivi passe à "expédiée"
+  try {
+    normalizeShippedStatusInternal()
+      .then(({ scanned, updated }) => {
+        console.log(`[shipnorm] Normalisation: ${updated} statut(s) mis à jour sur ${scanned}`);
+      })
+      .catch((e) => console.warn('[shipnorm] Erreur non bloquante', e?.message || e));
+  } catch(_) {}
 });
 
 // (route sync-woo-one déplacée plus bas)
@@ -418,6 +427,25 @@ async function rebuildProductTypeInternal() {
   }
   return { scanned, updated };
 }
+
+// Fonction interne: normaliser les statuts d'expédition
+async function normalizeShippedStatusInternal() {
+  let scanned = 0;
+  let updated = 0;
+  const cursor = Order.find({ 'shipping.trackingNumber': { $exists: true, $ne: '' }, status: { $nin: ['fulfilled','delivered','cancelled','refunded','failed'] } }).cursor();
+  for (let doc = await cursor.next(); doc != null; doc = await cursor.next()) {
+    scanned++;
+    doc.status = 'fulfilled';
+    doc.shipping = doc.shipping || {};
+    if (!doc.shipping.shippedAt) doc.shipping.shippedAt = new Date();
+    doc.events = doc.events || [];
+    doc.events.push({ type: 'order_shipped', message: 'Commande expédiée', payloadSnippet: { carrier: (doc.shipping && doc.shipping.carrier) ? doc.shipping.carrier : '', trackingNumber: (doc.shipping && doc.shipping.trackingNumber) ? doc.shipping.trackingNumber : '' } });
+    await doc.save();
+    updated++;
+  }
+  return { scanned, updated };
+}
+
 seedResponseTemplates();
 
 // Middleware
@@ -629,12 +657,16 @@ async function syncWooAllOrders() {
         };
         const trackingNumber = metaGet('tracking');
         const carrier = metaGet('carrier') || metaGet('shipping_provider') || '';
+        let statusToSet = internalStatus;
+        if (trackingNumber && !['delivered','cancelled','refunded','failed'].includes(internalStatus)) {
+          statusToSet = 'fulfilled';
+        }
 
         const update = {
           provider: 'woocommerce',
           providerOrderId: wooId,
           number: payload.number ? String(payload.number) : undefined,
-          status: internalStatus,
+          status: statusToSet,
           customer,
           totals: { currency, amount: isNaN(amount) ? 0 : amount, tax: taxTotal, shipping: shippingTotal },
           items,
@@ -644,7 +676,7 @@ async function syncWooAllOrders() {
           ...(shippingAddress ? { 'shipping.address': shippingAddress } : {}),
           ...(shippingMethod ? { 'shipping.method': shippingMethod } : {}),
           ...(carrier ? { 'shipping.carrier': carrier } : {}),
-          ...(trackingNumber ? { 'shipping.trackingNumber': trackingNumber } : {})
+          ...(trackingNumber ? { 'shipping.trackingNumber': trackingNumber, 'shipping.shippedAt': new Date() } : {})
         };
         update['meta.productType'] = productType;
         // VIN/Plaque depuis meta_data / lignes / note client
@@ -1253,12 +1285,16 @@ async function syncWooRecentOrders() {
       };
       const trackingNumber2 = metaGet2('tracking');
       const carrier2 = metaGet2('carrier') || metaGet2('shipping_provider') || '';
+      let statusToSet2 = internalStatus;
+      if (trackingNumber2 && !['delivered','cancelled','refunded','failed'].includes(internalStatus)) {
+        statusToSet2 = 'fulfilled';
+      }
 
       const update = {
         provider: 'woocommerce',
         providerOrderId: wooId,
         number: payload.number ? String(payload.number) : undefined,
-        status: internalStatus,
+        status: statusToSet2,
         customer,
         totals: { currency, amount: isNaN(amount) ? 0 : amount, tax: taxTotal2, shipping: shippingTotal2 },
         items,
@@ -1268,7 +1304,7 @@ async function syncWooRecentOrders() {
         ...(shippingAddress2 ? { 'shipping.address': shippingAddress2 } : {}),
         ...(shippingMethod2 ? { 'shipping.method': shippingMethod2 } : {}),
         ...(carrier2 ? { 'shipping.carrier': carrier2 } : {}),
-        ...(trackingNumber2 ? { 'shipping.trackingNumber': trackingNumber2 } : {})
+        ...(trackingNumber2 ? { 'shipping.trackingNumber': trackingNumber2, 'shipping.shippedAt': new Date() } : {})
       };
       const productType2 = detectProductTypeFromItems(items);
       update['meta.productType'] = productType2;
@@ -4747,14 +4783,32 @@ app.post('/api/webhooks/woocommerce', async (req, res) => {
       unitPrice: parseFloat((li.price || li.total || 0).toString())
     })) : [];
 
+    const shipLineW = Array.isArray(payload.shipping_lines) && payload.shipping_lines.length ? payload.shipping_lines[0] : null;
+    const shippingMethodW = shipLineW?.method_title || shipLineW?.method_id || '';
+    const shippingMetaW = Array.isArray(shipLineW?.meta_data) ? shipLineW.meta_data : [];
+    const trackingMetaW = (Array.isArray(payload.meta_data) ? payload.meta_data : []).concat(shippingMetaW);
+    const metaGetW = (key) => {
+      const m = trackingMetaW.find(m => (m?.key || '').toLowerCase().includes(String(key).toLowerCase()));
+      return m ? (m.value || '') : '';
+    };
+    const trackingNumberW = metaGetW('tracking');
+    const carrierW = metaGetW('carrier') || metaGetW('shipping_provider') || '';
+    let statusToSetW = internalStatus;
+    if (trackingNumberW && !['delivered','cancelled','refunded','failed'].includes(internalStatus)) {
+      statusToSetW = 'fulfilled';
+    }
+
     const update = {
       provider: 'woocommerce',
       providerOrderId: wooId,
       number: payload.number ? String(payload.number) : undefined,
-      status: internalStatus,
+      status: statusToSetW,
       customer,
       totals: { currency, amount: isNaN(amount) ? 0 : amount },
       items,
+      ...(shippingMethodW ? { 'shipping.method': shippingMethodW } : {}),
+      ...(carrierW ? { 'shipping.carrier': carrierW } : {}),
+      ...(trackingNumberW ? { 'shipping.trackingNumber': trackingNumberW, 'shipping.shippedAt': new Date() } : {}),
       events: [{ type: 'woo_webhook', message: `Événement Woo status=${payload.status}`, payloadSnippet: { id: wooId, status: payload.status } }]
     };
 
@@ -5092,6 +5146,13 @@ try {
   startSlaWatcher();
 } catch (e) {
   console.error('[slaWatcher] non démarré:', e);
+}
+
+// Démarrer le watcher de livraison ParcelPanel
+try {
+  startDeliveryWatcher();
+} catch (e) {
+  console.error('[deliveryWatcher] non démarré:', e);
 }
 
 // Démarrer le serveur
