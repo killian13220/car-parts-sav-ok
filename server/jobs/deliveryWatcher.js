@@ -5,6 +5,58 @@ if (!fetchFn) {
   try { fetchFn = require('undici').fetch; } catch (_) {}
 }
 
+// Réconciliation ponctuelle: si une commande est en 'delivered_awaiting_deposit' mais que ParcelPanel n'indique pas "delivered",
+// on la repasse en 'fulfilled' (expédiée) pour éviter les faux positifs.
+async function runDeliveryReconciliationOnce() {
+  const apiKey = (process.env.PARCELPANEL_API_KEY || '').trim();
+  if (!apiKey || !fetchFn) return { scanned: 0, reverted: 0 };
+
+  const candidates = await Order.find({
+    status: 'delivered_awaiting_deposit',
+    provider: 'woocommerce',
+    providerOrderId: { $exists: true, $ne: '' },
+    'shipping.trackingNumber': { $exists: true, $ne: '' }
+  }, { providerOrderId: 1, 'shipping.trackingNumber': 1 }).lean();
+
+  if (!candidates.length) return { scanned: 0, reverted: 0 };
+
+  let scanned = 0;
+  let reverted = 0;
+  for (const group of chunk(candidates.map(c => String(c.providerOrderId)), 40)) {
+    try {
+      const details = await fetchPPTrackingDetails(group, apiKey);
+      scanned += group.length;
+      // Indexer par order_id pour accès rapide
+      const byId = new Map(details.map(it => [String(it.order_id || it.number || '').trim(), it]));
+      for (const orderId of group) {
+        const item = byId.get(String(orderId));
+        if (!item) continue; // si aucun détail, ne pas toucher (conservateur)
+        const shipments = Array.isArray(item.shipments) ? item.shipments : [];
+        if (!shipments.length) continue; // sans shipments, on s'abstient
+        const hasDelivered = shipments.some(isDeliveredFromPPShipment);
+        if (!hasDelivered) {
+          await Order.updateOne(
+            { provider: 'woocommerce', providerOrderId: orderId },
+            {
+              $set: { status: 'fulfilled' },
+              $push: {
+                events: {
+                  $each: [
+                    { type: 'status_reconciled', message: 'Réconciliation: awaiting_deposit -> fulfilled (pas livré selon ParcelPanel)', at: new Date(), payloadSnippet: { provider: 'parcelpanel' } }
+                  ]
+                }
+              }
+            }
+          );
+          reverted += 1;
+        }
+      }
+    } catch (e) {
+      console.warn('[deliveryReconcile] PP batch error:', e && e.message ? e.message : e);
+    }
+  }
+  return { scanned, reverted };
+}
 function chunk(arr, size) {
   const out = [];
   for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
@@ -71,7 +123,7 @@ async function runDeliveryScanOnce() {
           await Order.updateOne(
             { provider: 'woocommerce', providerOrderId: orderId },
             {
-              $set: { status: 'delivered' },
+              $set: { status: 'delivered_awaiting_deposit' },
               $push: {
                 events: {
                   $each: [
@@ -114,4 +166,4 @@ function startDeliveryWatcher() {
   console.log(`[deliveryWatcher] Démarré. Intervalle=${intervalMinutes} min`);
 }
 
-module.exports = { startDeliveryWatcher };
+module.exports = { startDeliveryWatcher, runDeliveryReconciliationOnce };

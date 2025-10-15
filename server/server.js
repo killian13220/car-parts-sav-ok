@@ -79,7 +79,7 @@ const { sendStatusUpdateEmail, sendTicketCreationEmail, sendAssignmentEmail, sen
 const setupStatsRoutes = require('./stats-api');
 const { authenticateAdmin: adminAuthMW } = require('./middleware/auth');
 const { startSlaWatcher } = require('./jobs/slaWatcher');
-const { startDeliveryWatcher } = require('./jobs/deliveryWatcher');
+const { startDeliveryWatcher, runDeliveryReconciliationOnce } = require('./jobs/deliveryWatcher');
 require('dotenv').config();
 const { isS3Enabled, uploadBuffer, streamToResponse } = require('./services/storage');
 const { getCarrierTrackingEvents, getCarrierPublicLink } = require('./services/carrierTracking');
@@ -348,6 +348,24 @@ mongoose.connection.once('open', () => {
       })
       .catch((e) => console.warn('[shipnorm] Erreur non bloquante', e?.message || e));
   } catch(_) {}
+  // Migration optionnelle: delivered -> delivered_awaiting_deposit (si activée par env)
+  try {
+    const MIGRATE_FLAG = String(process.env.MIGRATE_DELIVERED_TO_AWAITING_ON_START || 'false').toLowerCase() === 'true';
+    if (MIGRATE_FLAG) {
+      migrateDeliveredToAwaitingOnce()
+        .then((count) => console.log(`[migrate-delivered] ${count} commande(s) mises à jour (delivered -> delivered_awaiting_deposit)`))
+        .catch((e) => console.warn('[migrate-delivered] Erreur non bloquante', e?.message || e));
+    }
+  } catch(_) {}
+  // Réconciliation optionnelle: repasser en "Expédié" les commandes marquées trop tôt
+  try {
+    const RECONCILE_FLAG = String(process.env.RECONCILE_DELIVERY_ON_START || 'false').toLowerCase() === 'true';
+    if (RECONCILE_FLAG) {
+      runDeliveryReconciliationOnce()
+        .then(({ scanned, reverted }) => console.log(`[deliveryReconcile] Scannés=${scanned}, remis à expédié=${reverted}`))
+        .catch((e) => console.warn('[deliveryReconcile] Erreur non bloquante', e?.message || e));
+    }
+  } catch(_) {}
 });
 
 // (route sync-woo-one déplacée plus bas)
@@ -432,7 +450,7 @@ async function rebuildProductTypeInternal() {
 async function normalizeShippedStatusInternal() {
   let scanned = 0;
   let updated = 0;
-  const cursor = Order.find({ 'shipping.trackingNumber': { $exists: true, $ne: '' }, status: { $nin: ['fulfilled','delivered','cancelled','refunded','failed'] } }).cursor();
+  const cursor = Order.find({ 'shipping.trackingNumber': { $exists: true, $ne: '' }, status: { $nin: ['fulfilled','delivered','delivered_awaiting_deposit','deposit_received','cancelled','refunded','failed'] } }).cursor();
   for (let doc = await cursor.next(); doc != null; doc = await cursor.next()) {
     scanned++;
     doc.status = 'fulfilled';
@@ -446,6 +464,28 @@ async function normalizeShippedStatusInternal() {
   return { scanned, updated };
 }
 
+// Migration ponctuelle: delivered -> delivered_awaiting_deposit
+async function migrateDeliveredToAwaitingOnce() {
+  try {
+    const res = await Order.updateMany(
+      { status: 'delivered' },
+      {
+        $set: { status: 'delivered_awaiting_deposit' },
+        $push: {
+          events: {
+            $each: [
+              { type: 'status_migrated', message: 'Migration: delivered -> delivered_awaiting_deposit', at: new Date() }
+            ]
+          }
+        }
+      }
+    );
+    return (res && (res.modifiedCount || res.nModified)) ? (res.modifiedCount || res.nModified) : 0;
+  } catch (e) {
+    console.warn('[migrate-delivered] erreur', e && e.message ? e.message : e);
+    return 0;
+  }
+}
 seedResponseTemplates();
 
 // Middleware
@@ -658,7 +698,7 @@ async function syncWooAllOrders() {
         const trackingNumber = metaGet('tracking');
         const carrier = metaGet('carrier') || metaGet('shipping_provider') || '';
         let statusToSet = internalStatus;
-        if (trackingNumber && !['delivered','cancelled','refunded','failed'].includes(internalStatus)) {
+        if (trackingNumber && !['delivered','delivered_awaiting_deposit','deposit_received','cancelled','refunded','failed'].includes(internalStatus)) {
           statusToSet = 'fulfilled';
         }
 
@@ -1286,7 +1326,7 @@ async function syncWooRecentOrders() {
       const trackingNumber2 = metaGet2('tracking');
       const carrier2 = metaGet2('carrier') || metaGet2('shipping_provider') || '';
       let statusToSet2 = internalStatus;
-      if (trackingNumber2 && !['delivered','cancelled','refunded','failed'].includes(internalStatus)) {
+      if (trackingNumber2 && !['delivered','delivered_awaiting_deposit','deposit_received','cancelled','refunded','failed'].includes(internalStatus)) {
         statusToSet2 = 'fulfilled';
       }
 
@@ -1521,6 +1561,37 @@ app.get('/r/no/:token', async (req, res) => {
   }
 });
 
+app.get('/r/rate/:token/:rating', async (req, res) => {
+  try {
+    const token = String(req.params.token || '').trim();
+    const rating = parseInt(String(req.params.rating || '').trim(), 10);
+    if (!token || !(rating >= 1 && rating <= 5)) return res.redirect('/reviews/lien-invalide/');
+    const inv = await ReviewInvite.findOne({ token }).lean();
+    if (!inv) return res.redirect('/reviews/lien-invalide/');
+    if (inv.revoked) return res.redirect('/reviews/lien-invalide/');
+
+    if (rating <= 2) {
+      await ReviewInvite.updateOne(
+        { _id: inv._id },
+        { $set: { decision: 'no', lockedByNo: true, clickedNoAt: inv.clickedNoAt ? inv.clickedNoAt : new Date() } }
+      );
+      return res.redirect(`/reviews/feedback/?t=${encodeURIComponent(token)}`);
+    }
+
+    if (inv.lockedByNo || inv.decision === 'no') {
+      return res.redirect('/reviews/merci-interne/');
+    }
+
+    if (!inv.clickedYesAt || inv.decision !== 'yes') {
+      await ReviewInvite.updateOne({ _id: inv._id }, { $set: { decision: 'yes', clickedYesAt: new Date() } });
+    }
+    const dest = TRUSTPILOT_URL.startsWith('http') ? TRUSTPILOT_URL : `https://${TRUSTPILOT_URL}`;
+    return res.redirect(dest);
+  } catch (e) {
+    console.error('[reviews] rate redirect error:', e);
+    return res.redirect('/reviews/lien-invalide/');
+  }
+});
 // Réception du feedback négatif (raison + détail)
 app.post('/api/reviews/feedback/:token', async (req, res) => {
   try {
@@ -3822,7 +3893,7 @@ function mapWooStatusToInternal(s) {
   const st = String(s || '').toLowerCase();
   if (st === 'processing') return 'processing';
   if (st === 'on-hold') return 'awaiting_transfer';
-  if (st === 'completed') return 'delivered';
+  if (st === 'completed') return 'fulfilled';
   if (st === 'pending') return 'pending_payment';
   if (st === 'cancelled') return 'cancelled';
   if (st === 'refunded') return 'refunded';
@@ -4794,7 +4865,7 @@ app.post('/api/webhooks/woocommerce', async (req, res) => {
     const trackingNumberW = metaGetW('tracking');
     const carrierW = metaGetW('carrier') || metaGetW('shipping_provider') || '';
     let statusToSetW = internalStatus;
-    if (trackingNumberW && !['delivered','cancelled','refunded','failed'].includes(internalStatus)) {
+    if (trackingNumberW && !['delivered','delivered_awaiting_deposit','deposit_received','cancelled','refunded','failed'].includes(internalStatus)) {
       statusToSetW = 'fulfilled';
     }
 

@@ -48,6 +48,16 @@ const transportOptions = {
 const sendReviewInviteEmail = async ({ toEmail, yesLink, noLink }) => {
   const to = String(toEmail || '').trim();
   if (!to || !yesLink || !noLink) return null;
+  // Extraire le token depuis yesLink/noLink afin de générer les liens de notation 1..5
+  const extractToken = (link) => {
+    try {
+      const u = new URL(link, baseUrl);
+      const parts = (u.pathname || '').split('/').filter(Boolean);
+      return parts[parts.length - 1] || '';
+    } catch (_) { return ''; }
+  };
+  const token = extractToken(yesLink) || extractToken(noLink);
+  const rateLink = (n) => token ? `${baseUrl}/r/rate/${token}/${n}` : '#';
   const subject = 'Votre avis compte – recevez 40 € de bon d\'achat';
   const htmlContent = `
     <div style="font-family: Arial, sans-serif; background:#f5f6f8; padding:24px 0;">
@@ -85,20 +95,36 @@ const sendReviewInviteEmail = async ({ toEmail, yesLink, noLink }) => {
                   </p>
                 </td>
               </tr>
-
-              <!-- CTA buttons -->
+              <!-- Notation par étoiles -->
               <tr>
                 <td align="center" style="padding:18px 24px 6px 24px;">
+                  <div style="color:#111827; font-size:16px; font-weight:700; margin-bottom:4px;">Notez votre expérience (1 à 5)</div>
+                  <div style="color:#6b7280; font-size:12px; margin-bottom:12px;">Cliquez sur une étoile pour sélectionner votre note</div>
                   <table role="presentation" cellspacing="0" cellpadding="0" style="margin:auto;">
                     <tr>
                       <td style="padding:0 6px 12px 6px;">
-                        <a href="${yesLink}" style="display:inline-block; background:#16a34a; color:#ffffff; text-decoration:none; font-weight:700; font-size:14px; padding:12px 18px; border-radius:10px;">Je suis satisfait</a>
+                        <a href="${rateLink(1)}" aria-label="1 étoile (très insatisfait)" style="display:inline-block; width:48px; height:48px; line-height:48px; text-align:center; font-size:26px; background:#fff7ed; border:1px solid #fde68a; border-radius:999px; color:#d97706; text-decoration:none;">★</a>
+                        <div style="text-align:center; font-size:11px; color:#6b7280; margin-top:4px;">1</div>
                       </td>
                       <td style="padding:0 6px 12px 6px;">
-                        <a href="${noLink}" style="display:inline-block; background:#e30613; color:#ffffff; text-decoration:none; font-weight:700; font-size:14px; padding:12px 18px; border-radius:10px;">Je ne suis pas satisfait</a>
+                        <a href="${rateLink(2)}" aria-label="2 étoiles" style="display:inline-block; width:48px; height:48px; line-height:48px; text-align:center; font-size:26px; background:#fff7ed; border:1px solid #fde68a; border-radius:999px; color:#d97706; text-decoration:none;">★</a>
+                        <div style="text-align:center; font-size:11px; color:#6b7280; margin-top:4px;">2</div>
+                      </td>
+                      <td style="padding:0 6px 12px 6px;">
+                        <a href="${rateLink(3)}" aria-label="3 étoiles" style="display:inline-block; width:48px; height:48px; line-height:48px; text-align:center; font-size:26px; background:#fff7ed; border:1px solid #fde68a; border-radius:999px; color:#d97706; text-decoration:none;">★</a>
+                        <div style="text-align:center; font-size:11px; color:#6b7280; margin-top:4px;">3</div>
+                      </td>
+                      <td style="padding:0 6px 12px 6px;">
+                        <a href="${rateLink(4)}" aria-label="4 étoiles" style="display:inline-block; width:48px; height:48px; line-height:48px; text-align:center; font-size:26px; background:#fff7ed; border:1px solid #fde68a; border-radius:999px; color:#d97706; text-decoration:none;">★</a>
+                        <div style="text-align:center; font-size:11px; color:#6b7280; margin-top:4px;">4</div>
+                      </td>
+                      <td style="padding:0 6px 12px 6px;">
+                        <a href="${rateLink(5)}" aria-label="5 étoiles (très satisfait)" style="display:inline-block; width:48px; height:48px; line-height:48px; text-align:center; font-size:26px; background:#fff7ed; border:1px solid #fde68a; border-radius:999px; color:#d97706; text-decoration:none;">★</a>
+                        <div style="text-align:center; font-size:11px; color:#6b7280; margin-top:4px;">5</div>
                       </td>
                     </tr>
                   </table>
+                  <div style="color:#6b7280; font-size:12px; margin-top:6px;">1 = Très insatisfait • 5 = Très satisfait</div>
                 </td>
               </tr>
 
@@ -125,7 +151,7 @@ const sendReviewInviteEmail = async ({ toEmail, yesLink, noLink }) => {
       </table>
     </div>
   `;
-  const textContent = `Vous avez commandé chez nous une pièce automobile récemment.\nNous avons besoin de votre avis.\n\nJe suis satisfait : ${yesLink}\nJe ne suis pas satisfait : ${noLink}\n\nBonus: 40€ de bon d'achat après votre retour (positif ou négatif), à utiliser sur votre prochaine commande.`;
+  const textContent = `Vous avez commandé chez nous une pièce automobile récemment.\nNous avons besoin de votre avis.\n\nNotez votre expérience :\n1 étoile : ${rateLink(1)}\n2 étoiles : ${rateLink(2)}\n3 étoiles : ${rateLink(3)}\n4 étoiles : ${rateLink(4)}\n5 étoiles : ${rateLink(5)}\n\nBonus: 40€ de bon d'achat après votre retour (positif ou négatif), à utiliser sur votre prochaine commande.`;
   const mailOptions = {
     from: process.env.EMAIL_FROM || 'sav@carpartsfrance.fr',
     to,
